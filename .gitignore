@@ -1,0 +1,23 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment / secrets
+.env
+.env.*
+
+# Local cache (user-specific, not for the repo)
+stars.json
+
+# Profiling / debug output
+perf.data
+perf.data.old
+flamegraph.svg
