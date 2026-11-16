@@ -1425,6 +1425,7 @@ impl App {
             .iter()
             .position(|(l, _)| *l == self.language)
             .unwrap_or(0);
+        self.popup_list = ListState::default();
         self.overlay = Overlay::Languages { items, selected };
     }
 
@@ -1624,6 +1625,7 @@ impl App {
 
     pub fn handle_mouse(&mut self, ev: MouseEvent) {
         if self.overlay != Overlay::None {
+            self.handle_popup_mouse(ev);
             return;
         }
         let pos = Position::new(ev.column, ev.row);
@@ -1671,6 +1673,78 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Mouse in a pop-up, like the panes: the wheel moves the selection, a
+    /// click selects a row and a click on the selected row activates it; a
+    /// click outside the pop-up closes it (never confirming anything).
+    fn handle_popup_mouse(&mut self, ev: MouseEvent) {
+        let pos = Position::new(ev.column, ev.row);
+        let r = self.regions;
+        let inside = r.popup_box.is_some_and(|b| b.contains(pos));
+        let wheel = match ev.kind {
+            MouseEventKind::ScrollDown => 1,
+            MouseEventKind::ScrollUp => -1,
+            _ => 0,
+        };
+        let click = matches!(ev.kind, MouseEventKind::Down(MouseButton::Left));
+        if !click && wheel == 0 {
+            return;
+        }
+        if click && !inside {
+            self.overlay = Overlay::None;
+            return;
+        }
+        let row = r
+            .popup
+            .and_then(|p| inner_row(p, pos))
+            .map(|row| self.popup_list.offset() + row);
+        match &mut self.overlay {
+            Overlay::None => {}
+            Overlay::Help => {
+                if click {
+                    self.overlay = Overlay::None;
+                }
+            }
+            Overlay::ConfirmUnstar { id, full_name } => {
+                if click && r.confirm_yes.is_some_and(|b| b.contains(pos)) {
+                    self.effects.push(Effect::Unstar {
+                        id: *id,
+                        full_name: full_name.clone(),
+                    });
+                    self.overlay = Overlay::None;
+                } else if click && r.confirm_no.is_some_and(|b| b.contains(pos)) {
+                    self.overlay = Overlay::None;
+                }
+            }
+            Overlay::Languages { items, selected } => {
+                let last = items.len().saturating_sub(1);
+                if wheel != 0 {
+                    *selected = selected.saturating_add_signed(wheel).min(last);
+                } else if let Some(i) = row.filter(|&i| i <= last) {
+                    if i == *selected {
+                        let choice = items[i].0.clone();
+                        self.overlay = Overlay::None;
+                        self.language = choice;
+                        self.refilter();
+                    } else {
+                        *selected = i;
+                    }
+                }
+            }
+            Overlay::AwesomePicker { selected, .. } => {
+                let current = *selected;
+                if wheel != 0 {
+                    self.picker_move(wheel);
+                } else if let Some(i) = row.filter(|&i| i < self.picker_view().len()) {
+                    if i == current {
+                        self.picker_activate(i);
+                    } else {
+                        self.set_picker_selected(i);
+                    }
+                }
+            }
         }
     }
 
