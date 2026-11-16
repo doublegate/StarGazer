@@ -279,11 +279,14 @@ impl Ui {
             app.repo_sel + 1
         };
         let mut title = format!(" {cat} {} {pos}/{} ", self.glyphs.sep, app.visible.len());
-        if !app.search.is_empty() {
+        if !app.search.trim().is_empty() {
+            // Results are ranked by relevance while searching, not by the
+            // sort mode shown in the header.
             title.push_str(&format!(
-                "{} \"{}\" ",
+                "{} \"{}\" {} by relevance ",
                 self.glyphs.sep,
-                sanitize(&app.search)
+                sanitize(&app.search),
+                self.glyphs.sep
             ));
         }
         let title = truncate_width(

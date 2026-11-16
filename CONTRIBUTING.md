@@ -42,7 +42,9 @@ cargo deny check            # licenses, advisories, sources
 | `src/sync.rs` | Full vs incremental sync, categorization, persistence |
 | `src/cache.rs` | Repo model and the atomic, versioned on-disk cache |
 | `src/categories.rs` | Rule-based categorization (bump `RULES_VERSION` when rules change) |
+| `src/search.rs` | Word-level relevance search (match kinds and field weights are documented at the top of the file) |
 | `src/text.rs` | Sanitizing and width-correct truncation of untrusted text |
+| `build.rs` | Embeds the icon and version info in `stargazer.exe` (Windows builds only) |
 | `src/theme.rs`, `src/config.rs`, `src/export.rs`, `src/clipboard.rs` | Themes and glyphs, config file, export, clipboard |
 
 ### Terminal width rule

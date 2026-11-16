@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-16
+
+### Changed
+
+- **Search ranks by relevance.** Each query word is matched against the individual words of
+  a repo (exact word, word prefix, inside a word for 4+ letters, typos, in-order letters
+  within one word), weighted by where it matched: repo name, then owner, then topics and
+  language, then description. Every word must match; the best matches come first and weak
+  typo or abbreviation matches last; equally relevant repos keep the current sort order.
+  The repo pane title shows "by relevance" while searching. With an empty search the list
+  is sorted exactly as before.
+- This replaces the whole-text fuzzy filter carried over from v0.1, which matched far too
+  much: on a 645-star account "ratatui" matched 369 repos (now 1), "terminal" 310 (now 24),
+  "rust tui" 455 (now 6). It also reverses the v0.1 rule that search results keep the
+  active sort order.
+
+### Added
+
+- `stargazer.exe` now has the StarGazer icon (16 to 256 px) and version information
+  embedded, via a Windows-only build step (`build.rs`, `winresource`).
+
+### Removed
+
+- The `nucleo-matcher` dependency (search no longer uses it) and the unused `insta`
+  development dependency.
+
 ### Documentation
 
 - README: how to verify downloads against `SHA256SUMS` on Linux, macOS and Windows; a
@@ -13,6 +39,11 @@ All notable changes to this project are documented here. The format follows
   removed default user, rollback); and a note on the unsigned macOS and Windows binaries
   with the Gatekeeper workaround. Signing and notarization are tracked in
   [#3](https://github.com/doublegate/StarGazer/issues/3).
+- README banner and screenshots of the v0.2.0 TUI (main view, details pane, key reference).
+- Project artwork and icons in `assets/`: banner and emblem generated with the Antigravity
+  CLI, a matching vector logo (`logo.svg`, plus a small-size variant), PNG icons from 16 to
+  1024 px, a multi-size `favicon.ico`, and a GitHub social-preview card. Provenance and
+  regeneration steps are in `assets/README.md`.
 
 ## [0.2.0] - 2026-11-16
 
@@ -113,6 +144,7 @@ All notable changes to this project are documented here. The format follows
   open-in-browser.
 - 2026-10-26: dependency update `thiserror` 1 to 2 (#1).
 
-[Unreleased]: https://github.com/doublegate/StarGazer/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/doublegate/StarGazer/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/doublegate/StarGazer/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/doublegate/StarGazer/compare/a874e20...v0.2.0
 [0.1.0]: https://github.com/doublegate/StarGazer/commit/a874e20

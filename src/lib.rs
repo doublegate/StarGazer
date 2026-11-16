@@ -17,6 +17,7 @@ pub mod clipboard;
 pub mod config;
 pub mod export;
 pub mod github;
+pub mod search;
 pub mod sync;
 pub mod text;
 pub mod theme;
