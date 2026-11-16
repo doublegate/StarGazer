@@ -27,8 +27,39 @@ use serde::{Deserialize, Serialize};
 
 /// Hard cap on entries taken from one list.
 pub const MAX_ENTRIES: usize = 10_000;
+/// Hard cap on lists taken from the index (the real one has ~680).
+pub const MAX_LISTS: usize = 5_000;
+/// Hard cap on Markdown input; longer input is cut (at a char boundary).
+pub const MAX_INPUT_BYTES: usize = 3 * 1024 * 1024;
 /// Hard cap on a URL's length.
 const MAX_URL: usize = 2048;
+/// Per-string caps (characters), so a hostile list cannot inflate memory
+/// through a few huge names, descriptions or headings: every entry clones
+/// its heading path, so the heading cap bounds that copy too.
+const MAX_HEADING: usize = 120;
+const MAX_NAME: usize = 200;
+const MAX_DESC: usize = 500;
+
+/// Sanitize and cap to `max` characters.
+fn clean(s: &str, max: usize) -> String {
+    let s = sanitize(s.trim());
+    match s.char_indices().nth(max) {
+        Some((cut, _)) => s[..cut].to_string(),
+        None => s,
+    }
+}
+
+/// `md` cut to [`MAX_INPUT_BYTES`] at a char boundary.
+fn bounded(md: &str) -> &str {
+    if md.len() <= MAX_INPUT_BYTES {
+        return md;
+    }
+    let mut cut = MAX_INPUT_BYTES;
+    while !md.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &md[..cut]
+}
 
 /// Headings whose entries are not part of the list.
 const SKIP_HEADINGS: &[&str] = &[
@@ -90,12 +121,15 @@ pub struct Entry {
     pub rank: u32,
 }
 
-/// Accept only absolute http(s) URLs of sane length without whitespace.
+/// Accept only absolute http(s) URLs of sane length made of visible ASCII.
+/// Non-ASCII is rejected outright: valid URLs percent-encode it, and
+/// allowing it would let invisible bidi/format characters make a URL
+/// display differently from what is opened.
 pub fn clean_url(url: &str) -> Option<String> {
     let url = url.trim();
     let ok = (url.starts_with("https://") || url.starts_with("http://"))
         && url.len() <= MAX_URL
-        && !url.chars().any(|c| c.is_whitespace() || c.is_control());
+        && url.bytes().all(|b| b.is_ascii_graphic());
     ok.then(|| url.to_string())
 }
 
@@ -175,7 +209,7 @@ fn description(after: &str) -> Option<String> {
         })
         .unwrap_or(after);
     let text = text.trim_start_matches([':', '-', '–', '—', ' ']).trim();
-    let text = sanitize(text);
+    let text = clean(text, MAX_DESC);
     (!text.is_empty() && text != "-").then_some(text)
 }
 
@@ -244,7 +278,7 @@ fn walk(md: &str, mut on_block: impl FnMut(usize, &[String], Block) -> bool) {
             Event::End(TagEnd::Heading(_)) => {
                 if let Some((level, text)) = heading_text.take() {
                     headings.retain(|(l, _)| *l < level);
-                    headings.push((level, sanitize(text.trim())));
+                    headings.push((level, clean(&text, MAX_HEADING)));
                 }
             }
             Event::Start(Tag::Item) => {
@@ -340,7 +374,8 @@ pub fn parse_index(md: &str) -> AwesomeIndex {
     // Items close innermost-first, so a list's children arrive before the
     // list itself; they wait here until their parent closes.
     let mut pending_children: Vec<ListRef> = Vec::new();
-    walk(md, |depth, path, block| {
+    let mut lists = 0usize;
+    walk(bounded(md), |depth, path, block| {
         // Sections are the H2 headings; entries outside one are preamble.
         let Some(section) = path.first() else {
             return true;
@@ -354,7 +389,7 @@ pub fn parse_index(md: &str) -> AwesomeIndex {
                 let Some(url) = url else { return true };
                 let url = url.trim_end_matches("#readme").to_string();
                 ListRef {
-                    name: sanitize(text.trim()),
+                    name: clean(&text, MAX_NAME),
                     desc: description(&block.after),
                     repo: github_repo(&url),
                     url: Some(url),
@@ -368,8 +403,8 @@ pub fn parse_index(md: &str) -> AwesomeIndex {
                     return true;
                 }
                 ListRef {
-                    name: sanitize(&name),
-                    desc: desc.map(|d| sanitize(&d)),
+                    name: clean(&name, MAX_NAME),
+                    desc: desc.map(|d| clean(&d, MAX_DESC)),
                     url: None,
                     repo: None,
                     children: Vec::new(),
@@ -389,7 +424,8 @@ pub fn parse_index(md: &str) -> AwesomeIndex {
             item.children = std::mem::take(&mut pending_children);
             section.items.push(item);
         }
-        true
+        lists += 1;
+        lists < MAX_LISTS
     });
     index.sections.retain(|s| !s.items.is_empty());
     index
@@ -398,7 +434,7 @@ pub fn parse_index(md: &str) -> AwesomeIndex {
 /// Parse one awesome list README into entries, in README order.
 pub fn parse_list(md: &str) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
-    walk(md, |depth, path, block| {
+    walk(bounded(md), |depth, path, block| {
         if skipped(path) {
             return true;
         }
@@ -408,7 +444,7 @@ pub fn parse_list(md: &str) -> Vec<Entry> {
         let Some(url) = clean_url(&url) else {
             return true; // anchors, relative links, mailto, ...
         };
-        let name = sanitize(text.trim());
+        let name = clean(&text, MAX_NAME);
         if name.is_empty() {
             return true;
         }
@@ -418,10 +454,10 @@ pub fn parse_list(md: &str) -> Vec<Entry> {
             let other: Vec<String> = block
                 .cells
                 .iter()
-                .map(|c| sanitize(c.trim()))
+                .map(|c| clean(c, MAX_DESC))
                 .filter(|c| !c.is_empty() && c != "-" && *c != name && !c.contains(&name))
                 .collect();
-            (!other.is_empty()).then(|| other.join(" · "))
+            (!other.is_empty()).then(|| clean(&other.join(" · "), MAX_DESC))
         } else {
             description(&block.after)
         };
@@ -606,6 +642,57 @@ mod tests {
         let e = parse_list(md);
         assert_eq!(e[0].name, "badname");
         assert!(!e[0].desc.as_deref().unwrap().contains('\t'));
+    }
+
+    #[test]
+    fn urls_with_invisible_or_non_ascii_characters_are_rejected() {
+        // Security review: a bidi override would make the URL display
+        // differently from what is opened.
+        assert!(clean_url("https://github.com/o/r\u{202E}gpj.exe").is_none());
+        assert!(clean_url("https://example.com/\u{200B}x").is_none());
+        assert!(clean_url("https://bücher.example/").is_none());
+        assert!(
+            clean_url("https://example.com/%C3%BC?q=1#frag").is_some(),
+            "percent-encoded is fine"
+        );
+        let md = "## X\n\n- [ok](https://example.com/a)\n- [spoof](https://example.com/\u{202E}moc.live)\n";
+        let e = parse_list(md);
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].name, "ok");
+    }
+
+    #[test]
+    fn oversized_strings_are_capped() {
+        // Security review: entry count alone did not bound memory, since
+        // every entry clones its heading path.
+        let huge = "h".repeat(50_000);
+        let md = format!("## {huge}\n\n### {huge}\n\n- [{huge}](https://example.com/x) - {huge}\n");
+        let e = parse_list(&md);
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].name.chars().count(), MAX_NAME);
+        assert_eq!(e[0].desc.as_deref().unwrap().chars().count(), MAX_DESC);
+        assert!(e[0].path.iter().all(|h| h.chars().count() == MAX_HEADING));
+
+        let idx_md = format!("## S\n\n- [{huge}](https://github.com/o/r) - {huge}\n");
+        let idx = parse_index(&idx_md);
+        assert_eq!(idx.sections[0].items[0].name.chars().count(), MAX_NAME);
+    }
+
+    #[test]
+    fn input_is_bounded_at_a_char_boundary() {
+        let s = "é".repeat(MAX_INPUT_BYTES); // 2 bytes each, twice the cap
+        let b = bounded(&s);
+        assert!(b.len() <= MAX_INPUT_BYTES && b.len() >= MAX_INPUT_BYTES - 1);
+        assert!(b.chars().all(|c| c == 'é'));
+    }
+
+    #[test]
+    fn index_list_cap_is_enforced() {
+        let md: String = (0..MAX_LISTS + 50)
+            .map(|i| format!("- [l{i}](https://github.com/o/l{i})\n"))
+            .collect();
+        let idx = parse_index(&format!("## S\n\n{md}"));
+        assert_eq!(idx.sections[0].items.len(), MAX_LISTS);
     }
 
     #[test]
