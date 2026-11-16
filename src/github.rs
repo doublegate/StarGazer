@@ -17,6 +17,7 @@
 
 use crate::cache::StarredRepo;
 use chrono::{DateTime, TimeZone, Utc};
+use futures::StreamExt;
 use reqwest::{RequestBuilder, Response, StatusCode, header};
 use serde::Deserialize;
 use serde_json::json;
@@ -468,44 +469,75 @@ impl GitHubClient {
     /// repo that no longer exists or is inaccessible). GraphQL, batches of
     /// [`META_BATCH`] aliased lookups; requires a token. Renamed repos
     /// resolve and report their current `nameWithOwner`.
+    ///
+    /// A failure part-way (typically GitHub's secondary limit on GraphQL
+    /// server time, about 2,000 repository lookups per minute) does not
+    /// discard what was fetched: [`MetaFetch::metas`] covers a prefix of
+    /// the input and [`MetaFetch::error`] says why it stopped.
     pub async fn fetch_repos_meta(
         &self,
         full_names: &[String],
         progress: &mut Progress<'_>,
-    ) -> Result<Vec<Option<RepoMeta>>, GitHubError> {
+    ) -> Result<MetaFetch, GitHubError> {
         if !self.has_token() {
             return Err(GitHubError::TokenRequired);
         }
         let url = format!("{}/graphql", self.api_url);
-        let mut out = Vec::with_capacity(full_names.len());
-        for (i, chunk) in full_names.chunks(META_BATCH).enumerate() {
-            progress(FetchEvent::Progress {
-                fetched: out.len(),
-                message: format!("Fetching star counts ({}/{})", out.len(), full_names.len()),
-            });
-            // Invalid names never reach GitHub; they simply get no metadata.
-            let valid: Vec<(usize, (&str, &str))> = chunk
-                .iter()
-                .enumerate()
-                .filter(|(_, n)| validate_full_name(n).is_ok())
-                .filter_map(|(j, n)| n.split_once('/').map(|p| (j, p)))
-                .collect();
-            let mut batch: Vec<Option<RepoMeta>> = vec![None; chunk.len()];
-            if !valid.is_empty() {
-                let (query, vars) = repos_meta_query(&valid);
-                let body = json!({ "query": query, "variables": vars });
-                let resp = self.send(|| self.http.post(&url).json(&body)).await?;
-                let text = resp.text().await?;
-                for (slot, meta) in parse_repos_meta(&text, &valid)? {
-                    batch[slot] = meta;
+        let total = full_names.len();
+        // GitHub's cost is per repository, not per request (measured: 100
+        // aliases ~3.3 s, 50 ~1.8 s), so throughput comes from a few batches
+        // in flight at once, not from larger batches. `buffered` keeps the
+        // input order.
+        let mut batches = futures::stream::iter(full_names.chunks(META_BATCH))
+            .map(|chunk| {
+                let url = &url;
+                async move {
+                    // Invalid names never reach GitHub; they get no metadata.
+                    let valid: Vec<(usize, (&str, &str))> = chunk
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, n)| validate_full_name(n).is_ok())
+                        .filter_map(|(j, n)| n.split_once('/').map(|p| (j, p)))
+                        .collect();
+                    let mut batch: Vec<Option<RepoMeta>> = vec![None; chunk.len()];
+                    if !valid.is_empty() {
+                        let (query, vars) = repos_meta_query(&valid);
+                        let body = json!({ "query": query, "variables": vars });
+                        let resp = self.send(|| self.http.post(url).json(&body)).await?;
+                        let text = resp.text().await?;
+                        for (slot, meta) in parse_repos_meta(&text, &valid)? {
+                            batch[slot] = meta;
+                        }
+                    }
+                    Ok::<_, GitHubError>(batch)
+                }
+            })
+            .buffered(META_CONCURRENCY);
+        let mut out = Vec::with_capacity(total);
+        progress(FetchEvent::Progress {
+            fetched: 0,
+            message: format!("Fetching star counts (0/{total})"),
+        });
+        while let Some(batch) = batches.next().await {
+            match batch {
+                Ok(batch) => out.extend(batch),
+                // Batches still in flight are dropped (cancelled) here.
+                Err(e) => {
+                    return Ok(MetaFetch {
+                        metas: out,
+                        error: Some(e),
+                    });
                 }
             }
-            out.extend(batch);
-            if i + 1 < full_names.len().div_ceil(META_BATCH) {
-                tokio::time::sleep(POLITE_DELAY).await;
-            }
+            progress(FetchEvent::Progress {
+                fetched: out.len(),
+                message: format!("Fetching star counts ({}/{total})", out.len()),
+            });
         }
-        Ok(out)
+        Ok(MetaFetch {
+            metas: out,
+            error: None,
+        })
     }
 
     /// Remove `owner/repo` from the authenticated user's stars.
@@ -655,9 +687,22 @@ pub struct ReadmeText {
 }
 
 /// Repositories per GraphQL metadata request. A 3-alias probe cost 1 rate
-/// limit point; 100 aliases with `repositoryTopics(first: 10)` stay far
-/// below GraphQL's node limit.
+/// limit point; 100 aliases stay far below GraphQL's node limit. Topics
+/// are not requested: they doubled the server time per batch (measured
+/// 6.9 s vs 3.3 s for 100 repos).
 pub const META_BATCH: usize = 100;
+/// Metadata requests in flight at once (well under GitHub's secondary
+/// limit of 100 concurrent requests).
+pub const META_CONCURRENCY: usize = 4;
+
+/// Result of [`GitHubClient::fetch_repos_meta`].
+#[derive(Debug)]
+pub struct MetaFetch {
+    /// One slot per input name, for a prefix of the input (all of it when
+    /// `error` is `None`).
+    pub metas: Vec<Option<RepoMeta>>,
+    pub error: Option<GitHubError>,
+}
 
 /// Repository metadata used for awesome-list entries.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
@@ -694,8 +739,7 @@ pub fn repos_meta_query(repos: &[(usize, (&str, &str))]) -> (String, serde_json:
     let query = format!(
         "query({}) {{ {} }}\n\
          fragment M on Repository {{ nameWithOwner databaseId stargazerCount description url \
-         primaryLanguage {{ name }} repositoryTopics(first: 10) {{ nodes {{ topic {{ name }} }} }} \
-         pushedAt updatedAt isArchived isFork }}",
+         primaryLanguage {{ name }} pushedAt updatedAt isArchived isFork }}",
         params.join(", "),
         fields.join(" ")
     );
@@ -731,6 +775,7 @@ pub fn parse_repos_meta(
         description: Option<String>,
         url: String,
         primary_language: Option<Named>,
+        #[serde(default)]
         repository_topics: Topics,
         pushed_at: Option<DateTime<Utc>>,
         updated_at: DateTime<Utc>,
@@ -741,7 +786,7 @@ pub fn parse_repos_meta(
     struct Named {
         name: String,
     }
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Default)]
     struct Topics {
         nodes: Vec<TopicNode>,
     }
@@ -941,6 +986,8 @@ pub fn parse_graphql_page(body: &str, user: &str) -> Result<GraphqlPage, GitHubE
                     archived: n.is_archived,
                     starred_at: e.starred_at,
                     category: String::new(),
+                    external: false,
+                    rank: 0,
                 });
             }
             Err(_) => page.skipped += 1,

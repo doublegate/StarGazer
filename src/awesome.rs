@@ -21,9 +21,16 @@
 //! (Contents, Contributing, License, ...) are skipped. Every string passes
 //! through [`crate::text::sanitize`].
 
+use crate::cache::StarredRepo;
+use crate::github::{
+    FetchEvent, GitHubClient, GitHubError, Progress, RepoMeta, validate_full_name,
+};
 use crate::text::sanitize;
+use chrono::{DateTime, Utc};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 /// Hard cap on entries taken from one list.
 pub const MAX_ENTRIES: usize = 10_000;
@@ -472,6 +479,399 @@ pub fn parse_list(md: &str) -> Vec<Entry> {
         entries.len() < MAX_ENTRIES
     });
     entries
+}
+
+// ── Storage and sync ────────────────────────────────────────────────────────
+//
+// Files, all written with `cache::write_atomic`:
+//   <data>/awesome/index.json                 the parsed index + ETag
+//   <data>/awesome/lists/<owner>__<repo>.json  one list's entries + metadata
+//   <data>/awesome/state.json                 the last chosen list
+//
+// No lock: the index has a single writer (the startup/refresh sync) and a
+// list file is only written by fetches of that same list, whose racing
+// writes carry the same data and replace each other atomically.
+
+/// The repository holding the awesome index.
+pub const INDEX_REPO: &str = "sindresorhus/awesome";
+/// Size cap for the index README (it is ~80 KB).
+const INDEX_MAX_BYTES: usize = 1024 * 1024;
+const STORE_VERSION: u32 = 1;
+
+/// Cached, parsed index.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct IndexCache {
+    pub version: u32,
+    pub etag: Option<String>,
+    pub fetched_at: Option<DateTime<Utc>>,
+    pub index: AwesomeIndex,
+}
+
+/// One list entry plus its GitHub metadata, when known.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListItem {
+    pub entry: Entry,
+    #[serde(default)]
+    pub meta: Option<RepoMeta>,
+}
+
+/// Cached, parsed list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListCache {
+    pub version: u32,
+    /// The list's own repository, `owner/repo`.
+    pub repo: String,
+    pub etag: Option<String>,
+    pub fetched_at: Option<DateTime<Utc>>,
+    /// Metadata was fetched successfully (false when anonymous or it failed),
+    /// so the next open retries it.
+    pub meta_complete: bool,
+    /// Repositories (lowercase `owner/repo`) GitHub reported missing or
+    /// inaccessible; not looked up again until a full refresh.
+    #[serde(default)]
+    pub missing: Vec<String>,
+    pub items: Vec<ListItem>,
+}
+
+/// The list chosen in the picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Selection {
+    /// The list's repository, `owner/repo`.
+    pub repo: String,
+    /// Display label, e.g. `Node.js › Cross-Platform`.
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct State {
+    last: Option<Selection>,
+}
+
+/// File locations for awesome data.
+#[derive(Debug, Clone)]
+pub struct Store {
+    dir: PathBuf,
+}
+
+impl Store {
+    /// Awesome data lives next to the star cache file.
+    pub fn beside(cache_path: &Path) -> Self {
+        let parent = cache_path.parent().unwrap_or_else(|| Path::new("."));
+        Self {
+            dir: parent.join("awesome"),
+        }
+    }
+
+    fn index_path(&self) -> PathBuf {
+        self.dir.join("index.json")
+    }
+
+    fn list_path(&self, repo: &str) -> Option<PathBuf> {
+        validate_full_name(repo).ok()?;
+        Some(
+            self.dir
+                .join("lists")
+                .join(format!("{}.json", repo.replace('/', "__"))),
+        )
+    }
+
+    fn state_path(&self) -> PathBuf {
+        self.dir.join("state.json")
+    }
+
+    fn load<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+        // A missing or unreadable file is simply "nothing cached"; it is
+        // rebuilt by the next fetch.
+        serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    }
+
+    fn save<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+        crate::cache::write_atomic(path, &serde_json::to_vec(value)?)
+    }
+
+    pub fn load_index(&self) -> Option<IndexCache> {
+        Self::load(&self.index_path())
+    }
+
+    pub fn load_list(&self, repo: &str) -> Option<ListCache> {
+        Self::load::<ListCache>(&self.list_path(repo)?).filter(|c| c.repo == repo)
+    }
+
+    pub fn last_selection(&self) -> Option<Selection> {
+        Self::load::<State>(&self.state_path())?.last
+    }
+
+    pub fn save_selection(&self, sel: &Selection) -> anyhow::Result<()> {
+        Self::save(
+            &self.state_path(),
+            &State {
+                last: Some(sel.clone()),
+            },
+        )
+    }
+}
+
+/// Fetched within the last `stale_days` (0 = never stale).
+pub fn is_fresh(fetched_at: Option<DateTime<Utc>>, stale_days: u32) -> bool {
+    match fetched_at {
+        None => false,
+        Some(_) if stale_days == 0 => true,
+        Some(t) => Utc::now() - t <= chrono::Duration::days(i64::from(stale_days)),
+    }
+}
+
+/// Refresh the index. A conditional request when cached (unless `full`);
+/// on failure the error is returned and the cache is left untouched. An
+/// index that parses to no sections is treated as an error rather than
+/// replacing a good cache with an empty one.
+pub async fn sync_index(
+    client: &GitHubClient,
+    store: &Store,
+    full: bool,
+) -> Result<IndexCache, GitHubError> {
+    let cached = store.load_index();
+    let etag = if full {
+        None
+    } else {
+        cached.as_ref().and_then(|c| c.etag.clone())
+    };
+    let readme = client
+        .fetch_readme_text(INDEX_REPO, etag.as_deref(), INDEX_MAX_BYTES)
+        .await?;
+    let mut cache = match (readme.text, cached) {
+        (None, Some(cached)) => cached,
+        (None, None) => return Err(GitHubError::Parse("index unchanged but not cached".into())),
+        (Some(text), _) => {
+            let index = parse_index(&text);
+            if index.sections.is_empty() {
+                return Err(GitHubError::Parse("awesome index has no sections".into()));
+            }
+            IndexCache {
+                version: STORE_VERSION,
+                etag: readme.etag,
+                fetched_at: None,
+                index,
+            }
+        }
+    };
+    cache.fetched_at = Some(Utc::now());
+    let _ = Store::save(&store.index_path(), &cache);
+    Ok(cache)
+}
+
+/// Metadata already known from the star cache, keyed by lowercase
+/// `owner/repo`, so awesome entries you have starred cost no lookup.
+pub fn known_from_stars(repos: &[StarredRepo]) -> HashMap<String, RepoMeta> {
+    repos
+        .iter()
+        .map(|r| {
+            (
+                r.full_name.to_lowercase(),
+                RepoMeta {
+                    name_with_owner: r.full_name.clone(),
+                    database_id: r.id,
+                    stargazer_count: r.stargazers_count,
+                    description: r.description.clone(),
+                    language: r.language.clone(),
+                    topics: r.topics.clone(),
+                    pushed_at: r.pushed_at,
+                    updated_at: r.updated_at,
+                    archived: r.archived,
+                    fork: r.fork,
+                    url: r.html_url.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Fetch (or refresh) one list: its README (conditionally, unless `force`),
+/// then GitHub metadata for its repository entries when a token is
+/// available.
+///
+/// Lookups are the scarce resource (GitHub allows roughly 2,000 repository
+/// lookups per minute of GraphQL server time), so only repositories not
+/// already known are looked up: not in `known` (the star cache), and,
+/// unless `force`, not in this list's previous cache, either with metadata
+/// or confirmed missing. A metadata failure part-way keeps what was
+/// fetched, is reported through `progress`, and leaves the list
+/// incomplete so the next open fetches only the rest.
+pub async fn fetch_list(
+    client: &GitHubClient,
+    store: &Store,
+    repo: &str,
+    force: bool,
+    known: &HashMap<String, RepoMeta>,
+    progress: &mut Progress<'_>,
+) -> Result<ListCache, GitHubError> {
+    validate_full_name(repo)?;
+    let cached = store.load_list(repo);
+    let etag = if force {
+        None
+    } else {
+        cached.as_ref().and_then(|c| c.etag.clone())
+    };
+    progress(FetchEvent::Progress {
+        fetched: 0,
+        message: format!("Fetching {repo}"),
+    });
+    let readme = client
+        .fetch_readme_text(repo, etag.as_deref(), MAX_INPUT_BYTES)
+        .await?;
+    let entries: Vec<Entry> = match (readme.text, &cached) {
+        (Some(text), _) => parse_list(&text),
+        (None, Some(c)) => c.items.iter().map(|i| i.entry.clone()).collect(),
+        (None, None) => Vec::new(),
+    };
+
+    // What is already known, by lowercase owner/repo.
+    let mut by_repo: HashMap<String, RepoMeta> = HashMap::new();
+    let mut missing: HashSet<String> = HashSet::new();
+    if !force && let Some(c) = &cached {
+        for item in &c.items {
+            if let (Some(r), Some(m)) = (&item.entry.repo, &item.meta) {
+                by_repo.insert(r.to_lowercase(), m.clone());
+            }
+        }
+        missing.extend(c.missing.iter().cloned());
+    }
+    for (k, m) in known {
+        by_repo.insert(k.clone(), m.clone());
+    }
+
+    let mut wanted: Vec<String> = entries
+        .iter()
+        .filter_map(|e| e.repo.clone())
+        .filter(|r| {
+            let k = r.to_lowercase();
+            !by_repo.contains_key(&k) && !missing.contains(&k)
+        })
+        .collect();
+    wanted.sort_by_key(|r| r.to_lowercase());
+    wanted.dedup_by_key(|r| r.to_lowercase());
+
+    let mut meta_complete = true;
+    if !wanted.is_empty() {
+        if client.has_token() {
+            let fetch = client.fetch_repos_meta(&wanted, progress).await?;
+            for (name, meta) in wanted.iter().zip(&fetch.metas) {
+                match meta {
+                    Some(m) => {
+                        by_repo.insert(name.to_lowercase(), m.clone());
+                    }
+                    None => {
+                        missing.insert(name.to_lowercase());
+                    }
+                }
+            }
+            if let Some(e) = fetch.error {
+                meta_complete = false;
+                progress(FetchEvent::Warning(format!(
+                    "star counts for {} of {} repositories in {repo} not loaded ({e}); \
+                     they load the next time you open the list",
+                    wanted.len() - fetch.metas.len(),
+                    wanted.len()
+                )));
+            }
+        } else {
+            meta_complete = false;
+        }
+    }
+
+    let mut missing: Vec<String> = missing.into_iter().collect();
+    missing.sort();
+    let cache = ListCache {
+        version: STORE_VERSION,
+        repo: repo.to_string(),
+        etag: readme.etag,
+        fetched_at: Some(Utc::now()),
+        meta_complete,
+        missing,
+        items: entries
+            .into_iter()
+            .map(|entry| ListItem {
+                meta: entry
+                    .repo
+                    .as_ref()
+                    .and_then(|r| by_repo.get(&r.to_lowercase()).cloned()),
+                entry,
+            })
+            .collect(),
+    };
+    if let Some(path) = store.list_path(repo) {
+        let _ = Store::save(&path, &cache);
+    }
+    Ok(cache)
+}
+
+/// Stable synthetic id for a row without GitHub metadata (FNV-1a of the
+/// URL, top bit set so it can never equal a GitHub database id).
+fn synthetic_id(url: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in url.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h | (1 << 63)
+}
+
+/// Rows for the repo pane. GitHub entries with metadata show their current
+/// `owner/name` and star count; everything else is an `external` row named
+/// as in the list. `category` carries the heading path inside the list.
+pub fn to_rows(cache: &ListCache) -> Vec<StarredRepo> {
+    let mut seen = HashSet::new();
+    cache
+        .items
+        .iter()
+        .filter_map(|item| {
+            let e = &item.entry;
+            let row = match &item.meta {
+                Some(m) => StarredRepo {
+                    id: if m.database_id != 0 {
+                        m.database_id
+                    } else {
+                        synthetic_id(&m.url)
+                    },
+                    full_name: m.name_with_owner.clone(),
+                    name: e.name.clone(),
+                    description: e.desc.clone().or_else(|| m.description.clone()),
+                    html_url: m.url.clone(),
+                    stargazers_count: m.stargazer_count,
+                    language: m.language.clone(),
+                    topics: m.topics.clone(),
+                    updated_at: m.updated_at,
+                    pushed_at: m.pushed_at,
+                    fork: m.fork,
+                    archived: m.archived,
+                    starred_at: None,
+                    category: e.path.join(" › "),
+                    external: false,
+                    rank: e.rank,
+                },
+                None => StarredRepo {
+                    id: synthetic_id(&e.url),
+                    full_name: e.repo.clone().unwrap_or_else(|| e.name.clone()),
+                    name: e.name.clone(),
+                    description: e.desc.clone(),
+                    html_url: e.url.clone(),
+                    stargazers_count: 0,
+                    language: None,
+                    topics: Vec::new(),
+                    updated_at: DateTime::<Utc>::UNIX_EPOCH,
+                    pushed_at: None,
+                    fork: false,
+                    archived: false,
+                    starred_at: None,
+                    category: e.path.join(" › "),
+                    external: true,
+                    rank: e.rank,
+                },
+            };
+            // A list may name the same repository more than once; show it
+            // once, at its first position.
+            seen.insert(row.id).then_some(row)
+        })
+        .collect()
 }
 
 #[cfg(test)]

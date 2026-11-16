@@ -43,9 +43,17 @@ pub struct StarredRepo {
     /// When the user starred it.
     #[serde(default)]
     pub starred_at: Option<DateTime<Utc>>,
-    /// Computed category (not from the API).
+    /// Computed category (not from the API). For awesome-list rows, the
+    /// entry's heading path inside the list (`Applications › Audio`).
     #[serde(default)]
     pub category: String,
+    /// Awesome-list row without GitHub metadata (non-GitHub link, missing
+    /// repo, or no token): no star count to show. Always false for stars.
+    #[serde(default)]
+    pub external: bool,
+    /// Awesome-list row position in its README, for "List order".
+    #[serde(default)]
+    pub rank: u32,
 }
 
 impl StarredRepo {
@@ -82,6 +90,8 @@ impl StarredRepo {
             archived: false,
             starred_at: None,
             category: String::new(),
+            external: false,
+            rank: 0,
         }
     }
 }
@@ -178,52 +188,57 @@ impl StarCache {
 
     /// Atomically persist the cache to `path`.
     pub fn save_to(&self, path: &Path) -> Result<()> {
-        let dir = path
-            .parent()
-            .ok_or_else(|| anyhow!("cache path has no parent: {}", path.display()))?;
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("creating data dir {}", dir.display()))?;
-
-        // Unique per process and per call, so concurrent writers (two
-        // instances, or the TUI and `export --sync`) never share a temp file;
-        // the final rename is atomic, so the last complete write wins.
-        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut tmp = path.as_os_str().to_owned();
-        tmp.push(format!(".{}.{seq}.tmp", std::process::id()));
-        let tmp = PathBuf::from(tmp);
-
-        let json = serde_json::to_vec_pretty(self)?;
-        let write = || -> Result<()> {
-            let mut opts = std::fs::OpenOptions::new();
-            // Not create_new: a stale temp file from a crashed process with a
-            // reused pid must not block saving.
-            opts.write(true).create(true).truncate(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
-            let mut f = opts
-                .open(&tmp)
-                .with_context(|| format!("writing {}", tmp.display()))?;
-            f.write_all(&json)?;
-            f.sync_all()?;
-            drop(f);
-            std::fs::rename(&tmp, path)
-                .with_context(|| format!("replacing cache {}", path.display()))
-        };
-        let result = write();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        result
+        write_atomic(path, &serde_json::to_vec_pretty(self)?)
     }
 
     /// Ids of every cached repo.
     pub fn known_ids(&self) -> HashSet<u64> {
         self.repos.iter().map(|r| r.id).collect()
     }
+}
+
+/// Atomically replace `path` with `bytes`: write a temp file next to it,
+/// fsync, rename. Parent directories are created; the file is private
+/// (0600) on Unix; a failed write removes its temp file. Used for every
+/// cache file (stars, awesome index, awesome lists).
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("cache path has no parent: {}", path.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("creating data dir {}", dir.display()))?;
+
+    // Unique per process and per call, so concurrent writers (two
+    // instances, or the TUI and `export --sync`) never share a temp file;
+    // the final rename is atomic, so the last complete write wins.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.{seq}.tmp", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+
+    let write = || -> Result<()> {
+        let mut opts = std::fs::OpenOptions::new();
+        // Not create_new: a stale temp file from a crashed process with a
+        // reused pid must not block saving.
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts
+            .open(&tmp)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+    };
+    let result = write();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Prepend `new_newest_first` to `existing`, dropping any repo already present
