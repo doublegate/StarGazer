@@ -17,6 +17,9 @@
 # backup and atomic-write temp files `--cache` dev runs can leave behind
 stars.json
 stars.json.*
+# Awesome-list data (v0.3.0) is written beside the star cache: index, lists,
+# last chosen list, and their temp files
+/awesome/
 
 # Profiling / debug / coverage output
 perf.data
