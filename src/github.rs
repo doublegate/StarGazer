@@ -488,8 +488,14 @@ impl GitHubClient {
         // aliases ~3.3 s, 50 ~1.8 s), so throughput comes from a few batches
         // in flight at once, not from larger batches. `buffered` keeps the
         // input order.
-        let mut batches = futures::stream::iter(full_names.chunks(META_BATCH))
-            .map(|chunk| {
+        // Owned chunks: a closure over borrowed slices is not general enough
+        // for a future that must be Send (tokio::spawn).
+        let chunks: Vec<Vec<String>> = full_names
+            .chunks(META_BATCH)
+            .map(<[String]>::to_vec)
+            .collect();
+        let mut batches = futures::stream::iter(chunks)
+            .map(|chunk: Vec<String>| {
                 let url = &url;
                 async move {
                     // Invalid names never reach GitHub; they get no metadata.

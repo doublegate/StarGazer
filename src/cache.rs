@@ -69,6 +69,9 @@ impl StarredRepo {
             .filter(|d| !d.is_empty());
         self.language = self.language.as_deref().map(sanitize);
         self.topics = self.topics.iter().map(|t| sanitize(t)).collect();
+        // Rule-based categories are ours, but awesome rows carry a list's
+        // own headings here.
+        self.category = sanitize(&self.category);
         self
     }
 

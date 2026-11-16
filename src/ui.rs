@@ -14,7 +14,10 @@
 //! (see [`crate::text`]) and every line is truncated to its pane's inner width
 //! by display columns, so nothing ever spills into a border.
 
-use crate::app::{App, CategorySort, Focus, Level, Overlay, REPO_ITEM_HEIGHT, Readme};
+use crate::app::{
+    AWESOME, App, CategorySort, Focus, Level, Overlay, PickerRow, REPO_ITEM_HEIGHT, Readme,
+    picker_rows,
+};
 use crate::cache::StarredRepo;
 use crate::text::{sanitize, truncate_width, width};
 use crate::theme::{Glyphs, Theme};
@@ -99,6 +102,14 @@ impl Ui {
                 let name = full_name.clone();
                 self.render_confirm(f, &name);
             }
+            Overlay::AwesomePicker {
+                filter,
+                filtering,
+                selected,
+            } => {
+                let (filter, filtering, selected) = (filter.clone(), *filtering, *selected);
+                self.render_awesome_picker(f, app, &filter, filtering, selected);
+            }
         }
     }
 
@@ -123,16 +134,21 @@ impl Ui {
                 t.fg(t.stars).add_modifier(Modifier::BOLD),
             ),
             Span::styled(sep.clone(), t.fg(t.dim)),
-            Span::styled(format!("[{}]", app.sort.label(g.ascii)), t.fg(t.dim)),
+            Span::styled(format!("[{}]", app.sort_label()), t.fg(t.dim)),
         ];
         let filters = app.filter_summary();
         if !filters.is_empty() {
             spans.push(Span::styled(sep, t.fg(t.dim)));
             spans.push(Span::styled(filters, t.fg(t.warning)));
         }
-        if app.syncing {
+        if app.syncing || app.awesome.loading {
             let frame = g.spinner[app.frame % g.spinner.len()];
-            spans.push(Span::styled(format!("  {frame} syncing"), t.fg(t.accent)));
+            let what = if app.syncing {
+                "syncing"
+            } else {
+                "loading list"
+            };
+            spans.push(Span::styled(format!("  {frame} {what}"), t.fg(t.accent)));
         }
         let spans = fit_spans(spans, area.width as usize, g.ellipsis);
         f.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -224,13 +240,43 @@ impl Ui {
                 } else {
                     self.glyphs.category_icon(name)
                 };
-                let label = format!("{icon} {name} ({count})");
-                ListItem::new(Line::from(truncate_width(
+                let awesome = name == AWESOME;
+                // The Awesome count is the chosen list's size; none chosen,
+                // none shown...
+                // ...and while the first load is still running ("(0)" would
+                // read as an empty list).
+                let label = if awesome
+                    && (app.awesome.selection.is_none()
+                        || (app.awesome.loading && app.awesome.repos.is_empty()))
+                {
+                    format!("{icon} {name}")
+                } else {
+                    format!("{icon} {name} ({count})")
+                };
+                let mut lines = vec![Line::from(truncate_width(
                     &label,
                     max,
                     self.glyphs.ellipsis,
-                )))
-                .style(self.theme.fg(self.theme.text))
+                ))];
+                // The chosen list, indented and in italics, only while the
+                // Awesome row is selected.
+                if awesome
+                    && app.awesome_expanded()
+                    && let Some(sel) = &app.awesome.selection
+                {
+                    lines.push(Line::from(vec![
+                        Span::raw(format!("   {} ", self.glyphs.arrow)),
+                        Span::styled(
+                            truncate_width(
+                                &self.glyphs.path_text(&sel.label),
+                                max.saturating_sub(4 + width(self.glyphs.arrow)),
+                                self.glyphs.ellipsis,
+                            ),
+                            Style::default().add_modifier(Modifier::ITALIC),
+                        ),
+                    ]));
+                }
+                ListItem::new(lines).style(self.theme.fg(self.theme.text))
             })
             .collect();
 
@@ -242,19 +288,32 @@ impl Ui {
         f.render_stateful_widget(list, area, &mut app.cat_list);
     }
 
-    fn repo_item(&self, r: &StarredRepo, max: usize, show_cat: bool) -> ListItem<'static> {
+    fn repo_item(
+        &self,
+        r: &StarredRepo,
+        max: usize,
+        show_cat: bool,
+        starred_badge: bool,
+    ) -> ListItem<'static> {
         let t = &self.theme;
         let g = &self.glyphs;
+        // Rows without GitHub metadata (awesome entries outside GitHub, or
+        // star counts not loaded yet) show a dash, not a fake zero.
+        let stars = if r.external {
+            "-".to_string()
+        } else {
+            fmt_stars(r.stargazers_count)
+        };
         let mut spans = vec![
             Span::styled(
                 r.full_name.clone(),
                 t.fg(t.text).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!(" {} {}", g.star, fmt_stars(r.stargazers_count)),
-                t.fg(t.stars),
-            ),
+            Span::styled(format!(" {} {stars}", g.star), t.fg(t.stars)),
         ];
+        if starred_badge {
+            spans.push(Span::styled(" starred", t.fg(t.dim)));
+        }
         if let Some(lang) = &r.language {
             spans.push(Span::styled(format!(" [{lang}]"), t.fg(t.language)));
         }
@@ -264,9 +323,9 @@ impl Ui {
         if r.fork {
             spans.push(Span::styled(format!(" {}", g.fork), t.fg(t.dim)));
         }
-        if show_cat {
+        if show_cat && !r.category.is_empty() {
             spans.push(Span::styled(
-                format!(" {} {}", g.sep, r.category),
+                format!(" {} {}", g.sep, g.path_text(&r.category)),
                 t.fg(t.dim),
             ));
         }
@@ -288,7 +347,14 @@ impl Ui {
 
     fn render_repos(&self, f: &mut Frame, app: &mut App, area: Rect) {
         let focused = app.focus == Focus::Repos;
-        let cat = app.selected_category().to_string();
+        let cat = match (&app.awesome.selection, app.in_awesome()) {
+            (Some(sel), true) => format!(
+                "{AWESOME} {} {}",
+                self.glyphs.path,
+                self.glyphs.path_text(&sel.label)
+            ),
+            _ => app.selected_category().to_string(),
+        };
         let pos = if app.visible.is_empty() {
             0
         } else {
@@ -316,7 +382,31 @@ impl Ui {
         app.regions.repo_page = (inner.height as usize / REPO_ITEM_HEIGHT).max(1);
 
         if app.visible.is_empty() {
-            let msg = if app.repos.is_empty() {
+            let progress;
+            let msg = if app.in_awesome() {
+                if app.awesome.selection.is_none() {
+                    "Press Enter to choose an awesome list."
+                } else if app.awesome.loading && app.rows().is_empty() {
+                    progress = app
+                        .awesome
+                        .progress
+                        .clone()
+                        .unwrap_or_else(|| "Loading list...".into());
+                    progress.as_str()
+                } else if let Some(e) = app
+                    .awesome
+                    .error
+                    .as_deref()
+                    .filter(|_| app.rows().is_empty())
+                {
+                    progress = format!("Could not load the list: {e}");
+                    progress.as_str()
+                } else if app.rows().is_empty() {
+                    "This list has no entries."
+                } else {
+                    "No entries match the current filters."
+                }
+            } else if app.repos.is_empty() {
                 if app.syncing {
                     "Loading stars..."
                 } else {
@@ -340,10 +430,15 @@ impl Ui {
             .saturating_sub(1);
         // v0.1 showed each repo's category on every row; keep that.
         let show_cat = true;
+        let awesome = app.in_awesome();
+        let rows = app.rows();
         let items: Vec<ListItem> = app
             .visible
             .iter()
-            .map(|&i| self.repo_item(&app.repos[i], max, show_cat))
+            .map(|&i| {
+                let r = &rows[i];
+                self.repo_item(r, max, show_cat, awesome && app.is_starred(r))
+            })
             .collect();
 
         let list = List::new(items)
@@ -409,7 +504,11 @@ impl Ui {
             field("url", r.html_url.clone(), t.fg(t.text)),
             field(
                 "stars",
-                format!("{} {}", g.star, fmt_stars(r.stargazers_count)),
+                if r.external {
+                    "-".into()
+                } else {
+                    format!("{} {}", g.star, fmt_stars(r.stargazers_count))
+                },
                 t.fg(t.stars),
             ),
             field(
@@ -417,10 +516,19 @@ impl Ui {
                 r.language.clone().unwrap_or_else(|| "-".into()),
                 t.fg(t.language),
             ),
-            field("category", r.category.clone(), t.fg(t.text)),
-            field("starred", date(r.starred_at), t.fg(t.text)),
-            field("pushed", date(r.pushed_at), t.fg(t.text)),
         ];
+        let github = crate::awesome::github_repo(&r.html_url).is_some();
+        if app.in_awesome() {
+            if !r.category.is_empty() {
+                lines.push(field("section", g.path_text(&r.category), t.fg(t.text)));
+            }
+            let starred = if app.is_starred(&r) { "yes" } else { "no" };
+            lines.push(field("in stars", starred.into(), t.fg(t.text)));
+        } else {
+            lines.push(field("category", r.category.clone(), t.fg(t.text)));
+            lines.push(field("starred", date(r.starred_at), t.fg(t.text)));
+        }
+        lines.push(field("pushed", date(r.pushed_at), t.fg(t.text)));
         let mut flags = Vec::new();
         if r.archived {
             flags.push(g.archived);
@@ -445,6 +553,10 @@ impl Ui {
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )));
         match app.readmes.get(&r.id) {
+            _ if !github => lines.push(Line::from(Span::styled(
+                "(not a GitHub repository; Enter opens the link)",
+                t.fg(t.dim),
+            ))),
             None | Some(Readme::Loading) => {
                 lines.push(Line::from(Span::styled("Loading...", t.fg(t.dim))))
             }
@@ -506,7 +618,7 @@ impl Ui {
                 truncate_width(&format!(" {}", s.text), max, g.ellipsis),
                 style,
             ))
-        } else if let Some(p) = &app.progress {
+        } else if let Some(p) = app.progress.as_ref().or(app.awesome.progress.as_ref()) {
             Line::from(Span::styled(
                 truncate_width(&format!(" {p}"), max, g.ellipsis),
                 t.fg(t.accent),
@@ -544,6 +656,15 @@ impl Ui {
             ]
         } else {
             match app.focus {
+                Focus::Categories if app.in_awesome() => &[
+                    ("j/k", "category"),
+                    ("Enter", "choose list"),
+                    ("Tab", "focus"),
+                    ("/", "search"),
+                    ("s", "sort"),
+                    ("?", "help"),
+                    ("q", "quit"),
+                ],
                 Focus::Categories => &[
                     ("j/k", "category"),
                     ("Tab", "focus"),
@@ -614,6 +735,7 @@ impl Ui {
             ("Tab / Shift-Tab", "cycle focus"),
             ("h / Left, Right", "focus left / right"),
             ("Enter / o", "open repo in browser"),
+            ("Enter on Awesome", "choose an awesome list (/ filters it)"),
             ("d", "toggle details + README pane"),
             ("/", "fuzzy search (Enter opens match, Esc clears)"),
             ("s", "cycle sort of the focused pane"),
@@ -671,6 +793,101 @@ impl Ui {
             .highlight_style(t.selection(true))
             .highlight_symbol(self.glyphs.pointer);
         f.render_stateful_widget(list, rect, &mut state);
+    }
+
+    fn render_awesome_picker(
+        &self,
+        f: &mut Frame,
+        app: &App,
+        filter: &str,
+        filtering: bool,
+        selected: usize,
+    ) {
+        let t = &self.theme;
+        let g = &self.glyphs;
+        let rows: Vec<PickerRow> = app
+            .awesome
+            .index
+            .as_ref()
+            .map(|i| picker_rows(i, filter))
+            .unwrap_or_default();
+        let area = f.area();
+        let (rect, block) = self.popup(
+            f,
+            "Awesome lists",
+            area.width.saturating_sub(8).min(96),
+            area.height.saturating_sub(4),
+        );
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+        let [filter_area, list_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .areas(inner);
+
+        // Filter line: what is typed, or how to start typing.
+        let max = filter_area.width as usize;
+        let line = if filtering || !filter.is_empty() {
+            let q = truncate_width(&sanitize(filter), max.saturating_sub(3), g.ellipsis);
+            if filtering {
+                let x = filter_area.x + 3 + width(&q) as u16;
+                f.set_cursor_position(Position::new(
+                    x.min(filter_area.right().saturating_sub(1)),
+                    filter_area.y,
+                ));
+            }
+            Line::from(vec![
+                Span::styled(" / ", t.fg(t.accent).add_modifier(Modifier::BOLD)),
+                Span::styled(q, t.fg(t.text)),
+            ])
+        } else {
+            Line::from(Span::styled(
+                truncate_width(" / filter   Enter choose   Esc close", max, g.ellipsis),
+                t.fg(t.dim),
+            ))
+        };
+        f.render_widget(Paragraph::new(line), filter_area);
+
+        if rows.is_empty() {
+            f.render_widget(
+                Paragraph::new("  No lists match.").style(t.fg(t.dim)),
+                list_area,
+            );
+            return;
+        }
+        let max = (list_area.width as usize).saturating_sub(width(g.pointer) + 1);
+        let items: Vec<ListItem> = rows
+            .iter()
+            .map(|r| {
+                let line = match r.depth {
+                    0 => Line::from(Span::styled(
+                        truncate_width(&r.name, max, g.ellipsis),
+                        t.fg(t.accent).add_modifier(Modifier::BOLD),
+                    )),
+                    depth => {
+                        let indent = "  ".repeat(depth as usize);
+                        let name_style = if r.selectable() {
+                            t.fg(t.text)
+                        } else {
+                            // Link-less groups and lists hosted elsewhere.
+                            t.fg(t.dim)
+                        };
+                        let mut spans =
+                            vec![Span::raw(indent), Span::styled(r.name.clone(), name_style)];
+                        if let Some(d) = &r.desc {
+                            spans.push(Span::styled(format!(" {} {d}", g.sep), t.fg(t.dim)));
+                        }
+                        Line::from(fit_spans(spans, max, g.ellipsis))
+                    }
+                };
+                ListItem::new(line)
+            })
+            .collect();
+        let mut state = ListState::default().with_selected(Some(selected.min(rows.len() - 1)));
+        let list = List::new(items)
+            .highlight_style(t.selection(true))
+            .highlight_symbol(g.pointer);
+        f.render_stateful_widget(list, list_area, &mut state);
     }
 
     fn render_confirm(&self, f: &mut Frame, full_name: &str) {

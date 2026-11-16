@@ -167,6 +167,21 @@ pub struct Glyphs {
     pub spinner: &'static [&'static str],
     /// Icon of the "<user>'s repos" view.
     pub own: &'static str,
+    /// Lead-in of the chosen awesome list's line under "Awesome".
+    pub arrow: &'static str,
+    /// Separator of nested names (`Node.js › Cross-Platform`).
+    pub path: &'static str,
+}
+
+impl Glyphs {
+    /// `s` with the stored path separator (`›`) in this glyph set's form.
+    pub fn path_text(&self, s: &str) -> String {
+        if self.ascii {
+            s.replace('›', self.path)
+        } else {
+            s.to_string()
+        }
+    }
 }
 
 impl Glyphs {
@@ -183,6 +198,8 @@ impl Glyphs {
         error: "✗",
         spinner: &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
         own: "👤",
+        arrow: "→",
+        path: "›",
     };
 
     pub const ASCII: Self = Self {
@@ -197,6 +214,8 @@ impl Glyphs {
         error: "!",
         spinner: &["|", "/", "-", "\\"],
         own: "me",
+        arrow: "->",
+        path: ">",
     };
 
     pub fn new(ascii: bool) -> Self {
@@ -209,6 +228,7 @@ impl Glyphs {
         if self.ascii {
             return match cat {
                 "All" => "**",
+                crate::app::AWESOME => "aw",
                 "Rust" => "rs",
                 "Python" => "py",
                 "AI / ML" => "ai",
@@ -226,6 +246,9 @@ impl Glyphs {
         }
         match cat {
             "All" => "🌟",
+            // Sunglasses: the awesome lists' own mascot mood; one
+            // emoji-presentation code point like every other icon.
+            crate::app::AWESOME => "😎",
             "Rust" => "🦀",
             "Python" => "🐍",
             "AI / ML" => "🤖",
@@ -255,7 +278,7 @@ mod tests {
         assert_eq!(g.own.chars().count(), 1);
         assert_eq!(g.own.width(), 2);
         assert_eq!(crate::text::sanitize(g.own), g.own);
-        for cat in CATEGORIES.iter().chain(std::iter::once(&"All")) {
+        for cat in CATEGORIES.iter().chain([&"All", &crate::app::AWESOME]) {
             let icon = g.category_icon(cat);
             assert_eq!(
                 icon.chars().count(),
@@ -274,10 +297,12 @@ mod tests {
     #[test]
     fn ascii_glyphs_are_ascii() {
         let g = Glyphs::ASCII;
-        for s in [g.logo, g.star, g.pointer, g.ellipsis, g.sep, g.error, g.own] {
+        for s in [
+            g.logo, g.star, g.pointer, g.ellipsis, g.sep, g.error, g.own, g.arrow, g.path,
+        ] {
             assert!(s.is_ascii(), "{s:?}");
         }
-        for cat in CATEGORIES {
+        for cat in CATEGORIES.iter().chain([&crate::app::AWESOME]) {
             assert!(g.category_icon(cat).is_ascii());
         }
         assert!(g.spinner.iter().all(|s| s.is_ascii()));
@@ -286,7 +311,7 @@ mod tests {
     #[test]
     fn unicode_glyphs_have_unambiguous_widths() {
         let g = Glyphs::UNICODE;
-        for s in [g.logo, g.ellipsis, g.sep, g.error] {
+        for s in [g.logo, g.ellipsis, g.sep, g.error, g.arrow, g.path] {
             assert_eq!(s.width(), 1, "{s:?}");
         }
         // The star is a single emoji-presentation codepoint: always 2 columns.
