@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Documentation
+
+- README: how to verify downloads against `SHA256SUMS` on Linux, macOS and Windows; a
+  `cargo install --git` option; an "Upgrading from v0.1" section (automatic cache upgrade,
+  removed default user, rollback); and a note on the unsigned macOS and Windows binaries
+  with the Gatekeeper workaround. Signing and notarization are tracked in
+  [#3](https://github.com/doublegate/StarGazer/issues/3).
+
 ## [0.2.0] - 2026-11-16
 
 ### Fixed

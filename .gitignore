@@ -13,15 +13,25 @@
 .env
 .env.*
 
-# Local cache (user-specific, not for the repo)
+# Local cache (user-specific, not for the repo), including the corrupt-file
+# backup and atomic-write temp files `--cache` dev runs can leave behind
 stars.json
+stars.json.*
 
-# Profiling / debug output
+# Profiling / debug / coverage output
 perf.data
 perf.data.old
 flamegraph.svg
+*.profraw
+lcov.info
+
+# Local release packaging (CI builds the real archives)
+/dist/
 
 # Local agent instruction files (Master-Claude managed; import ~/.claude paths)
 /AGENTS.md
 /CLAUDE.md
 /GEMINI.md
+CLAUDE.local.md
+*.mc-bak
+.claude/settings.local.json

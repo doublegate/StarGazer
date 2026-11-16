@@ -7,6 +7,7 @@ searchable, and one keypress from your browser.
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 [![CI](https://github.com/doublegate/StarGazer/actions/workflows/ci.yml/badge.svg)](https://github.com/doublegate/StarGazer/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/doublegate/StarGazer)](https://github.com/doublegate/StarGazer/releases/latest)
 
 ---
 
@@ -58,12 +59,31 @@ ties go to the category listed first.
 
 ## Installation
 
+### Prerequisites
+
+- [`gh` CLI](https://cli.github.com/) signed in (recommended): higher API rate limits, faster
+  GraphQL sync, unstar support, and your login is detected automatically
+
 ### Prebuilt binaries
 
 Download the archive for your platform from the
 [latest release](https://github.com/doublegate/StarGazer/releases/latest) (Linux x86_64 and
-aarch64, macOS Intel and Apple Silicon, Windows x86_64), check it against `SHA256SUMS`, and
-put `stargazer` on your `PATH`.
+aarch64, macOS Intel and Apple Silicon, Windows x86_64) together with `SHA256SUMS`, verify it,
+and put `stargazer` on your `PATH`:
+
+```bash
+# Linux
+sha256sum -c --ignore-missing SHA256SUMS
+tar -xzf stargazer-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
+install -m 755 stargazer-v0.2.0-x86_64-unknown-linux-gnu/stargazer ~/.local/bin/
+
+# macOS
+grep aarch64-apple-darwin SHA256SUMS | shasum -a 256 -c
+tar -xzf stargazer-v0.2.0-aarch64-apple-darwin.tar.gz
+```
+
+On Windows, compare `Get-FileHash stargazer-v0.2.0-x86_64-pc-windows-msvc.zip` with the line in
+`SHA256SUMS`, then extract the zip.
 
 > **macOS:** the binaries are not yet signed or notarized
 > ([#3](https://github.com/doublegate/StarGazer/issues/3)), so Gatekeeper blocks a
@@ -74,19 +94,37 @@ put `stargazer` on your `PATH`.
 
 ### Build from source
 
-Requires Rust 1.88 or newer ([rustup.rs](https://rustup.rs)).
+Requires Rust 1.88 or newer ([rustup.rs](https://rustup.rs)). Either let Cargo build and
+install it into `~/.cargo/bin`:
+
+```bash
+cargo install --locked --git https://github.com/doublegate/StarGazer --tag v0.2.0
+```
+
+or build a checkout and copy the binary wherever you keep tools:
 
 ```bash
 git clone https://github.com/doublegate/StarGazer
 cd StarGazer
 cargo build --release --locked
-cp target/release/stargazer ~/.local/bin/
+install -m 755 target/release/stargazer ~/.local/bin/
 ```
 
-### Prerequisites
+### Upgrading from v0.1
 
-- [`gh` CLI](https://cli.github.com/) signed in (recommended): higher API rate limits, faster
-  GraphQL sync, unstar support, and your login is detected automatically
+Replace the binary the same way you installed it (v0.1 was usually copied to
+`~/.local/bin`). Optionally keep the old one first:
+`cp ~/.local/bin/stargazer ~/.local/share/stargazer/stargazer-v0.1.0.bin`.
+
+- **The cache upgrades itself.** The first v0.2 launch converts
+  `~/.local/share/stargazer/stars.json` in place and shows a one-time notice with how many
+  repos changed category under the new rules. Nothing is lost, and v0.1 can still read the
+  upgraded file, so going back only means restoring the old binary.
+- **No built-in default user.** v0.1 fell back to a hard-coded account. v0.2 uses `--user`,
+  `STARGAZER_USER`, the config file, the user your existing cache belongs to, or your `gh`
+  login, in that order; with a v0.1 cache present, nothing needs to change.
+- **Categories changed.** There is a new Python category and stricter keyword matching; see
+  [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ## Usage
 
