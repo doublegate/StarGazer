@@ -216,59 +216,104 @@ pub struct AwesomeView {
     pub progress: Option<String>,
     /// Last fetch of the chosen list failed (rows may be from the cache).
     pub error: Option<String>,
+    /// Open rows of the picker tree (`PickerRow::key`), kept between
+    /// openings so the picker reopens as it was left.
+    pub expanded: HashSet<String>,
+}
+
+/// An edit of the picker's filter text.
+#[derive(Debug, Clone, Copy)]
+enum FilterEdit {
+    Clear,
+    Pop,
+    Push(char),
+}
+
+/// What a row of the Awesome picker is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerKind {
+    /// A `##` section of the index (expands to its lists).
+    Section,
+    /// A link-less group such as "Linux" (expands to its sub-lists).
+    Group,
+    /// A list that also has sub-lists, such as Python (expands; its own
+    /// list is the first child, an [`PickerKind::All`] row).
+    Parent,
+    /// "Python (all)": opens the parent list itself.
+    All,
+    /// A list without sub-lists (opens it).
+    List,
 }
 
 /// One row of the Awesome picker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PickerRow {
-    /// 0 = section, 1 = list or group, 2 = sub-list.
+    pub kind: PickerKind,
+    /// 0 = section, 1 = list/group/parent, 2 = sub-list or "(all)".
     pub depth: u8,
+    /// Stable identity across rebuilds (expansion state, cursor).
+    pub key: String,
     pub name: String,
     pub desc: Option<String>,
-    /// `owner/repo` of a choosable list; `None` for sections, link-less
-    /// groups and lists hosted outside GitHub.
+    /// `owner/repo` of the list a choosable row opens.
     pub repo: Option<String>,
     /// Label shown under "Awesome" once chosen, e.g. `Node.js › Cross-Platform`.
     pub label: String,
+    /// Rows inside an expander (lists of a section, sub-lists of a parent).
+    pub children: usize,
+    /// The expander is open.
+    pub open: bool,
     /// Matches the filter itself (false for headers and for parents shown
     /// only as context of a matching sub-list).
     pub matched: bool,
 }
 
 impl PickerRow {
+    /// Expands and collapses rather than opening a list.
+    pub fn expander(&self) -> bool {
+        matches!(
+            self.kind,
+            PickerKind::Section | PickerKind::Group | PickerKind::Parent
+        )
+    }
+
+    /// Opens a list (a GitHub-hosted one; lists hosted elsewhere cannot be
+    /// fetched and stay listed for information only).
     pub fn selectable(&self) -> bool {
-        self.repo.is_some()
+        matches!(self.kind, PickerKind::All | PickerKind::List) && self.repo.is_some()
     }
 }
 
-/// Flatten the index into picker rows, keeping only lists whose name,
-/// description, parent or section contain every word of `filter`
-/// (case-insensitive), plus the headers above them.
-pub fn picker_rows(index: &AwesomeIndex, filter: &str) -> Vec<PickerRow> {
+/// Picker rows as a collapsible tree: sections always, a section's lists
+/// when it is in `expanded`, and a parent's "(all)" row plus sub-lists when
+/// the parent is. With a `filter`, every list whose name, description,
+/// parent or section contains all of its words (case-insensitive) is shown
+/// with its path, regardless of `expanded`.
+pub fn picker_rows(
+    index: &AwesomeIndex,
+    filter: &str,
+    expanded: &HashSet<String>,
+) -> Vec<PickerRow> {
     let terms: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
+    let filtering = !terms.is_empty();
     let matches = |parts: &[&str]| {
         let hay = parts.join(" ").to_lowercase();
         terms.iter().all(|t| hay.contains(t.as_str()))
     };
-    let row = |depth, l: &ListRef, label: String, matched| PickerRow {
-        depth,
-        name: l.name.clone(),
-        desc: l.desc.clone(),
-        repo: l.repo.clone(),
-        label,
-        matched,
-    };
     let mut out = Vec::new();
     for section in &index.sections {
+        let skey = format!("s/{}", section.name);
         let mut rows = Vec::new();
         for item in &section.items {
+            let ikey = format!("l/{}/{}", section.name, item.name);
             let desc = item.desc.as_deref().unwrap_or("");
-            let parent_hit = matches(&[&item.name, desc, &section.name]);
-            let children: Vec<PickerRow> = item
+            let parent_hit = filtering && matches(&[&item.name, desc, &section.name]);
+            let kids: Vec<&ListRef> = item
                 .children
                 .iter()
                 .filter(|c| {
-                    parent_hit
+                    !filtering
+                        || parent_hit
                         || matches(&[
                             &c.name,
                             c.desc.as_deref().unwrap_or(""),
@@ -276,22 +321,82 @@ pub fn picker_rows(index: &AwesomeIndex, filter: &str) -> Vec<PickerRow> {
                             &section.name,
                         ])
                 })
-                .map(|c| row(2, c, format!("{} › {}", item.name, c.name), true))
                 .collect();
-            if parent_hit || !children.is_empty() {
-                rows.push(row(1, item, item.name.clone(), parent_hit));
-                rows.extend(children);
+            if filtering && !parent_hit && kids.is_empty() {
+                continue;
+            }
+            let kind = match (item.children.is_empty(), &item.url) {
+                (true, _) => PickerKind::List,
+                (false, None) => PickerKind::Group,
+                (false, Some(_)) => PickerKind::Parent,
+            };
+            let open = kind != PickerKind::List && (filtering || expanded.contains(&ikey));
+            rows.push(PickerRow {
+                kind,
+                depth: 1,
+                key: ikey.clone(),
+                name: item.name.clone(),
+                desc: item.desc.clone(),
+                repo: if kind == PickerKind::List {
+                    item.repo.clone()
+                } else {
+                    None
+                },
+                label: item.name.clone(),
+                children: item.children.len(),
+                open,
+                matched: !filtering || parent_hit,
+            });
+            if !open {
+                continue;
+            }
+            // The parent's own list first, when it is one (not for groups).
+            if kind == PickerKind::Parent && (!filtering || parent_hit) {
+                rows.push(PickerRow {
+                    kind: PickerKind::All,
+                    depth: 2,
+                    key: format!("a/{}/{}", section.name, item.name),
+                    name: format!("{} (all)", item.name),
+                    desc: item.desc.clone(),
+                    repo: item.repo.clone(),
+                    label: item.name.clone(),
+                    children: 0,
+                    open: false,
+                    matched: true,
+                });
+            }
+            for c in kids {
+                rows.push(PickerRow {
+                    kind: PickerKind::List,
+                    depth: 2,
+                    key: format!("c/{}/{}/{}", section.name, item.name, c.name),
+                    name: c.name.clone(),
+                    desc: c.desc.clone(),
+                    repo: c.repo.clone(),
+                    label: format!("{} › {}", item.name, c.name),
+                    children: 0,
+                    open: false,
+                    matched: true,
+                });
             }
         }
-        if !rows.is_empty() {
-            out.push(PickerRow {
-                depth: 0,
-                name: section.name.clone(),
-                desc: None,
-                repo: None,
-                label: section.name.clone(),
-                matched: false,
-            });
+        if filtering && rows.is_empty() {
+            continue;
+        }
+        let open = filtering || expanded.contains(&skey);
+        out.push(PickerRow {
+            kind: PickerKind::Section,
+            depth: 0,
+            key: skey,
+            name: section.name.clone(),
+            desc: None,
+            repo: None,
+            label: section.name.clone(),
+            children: section.items.len(),
+            open,
+            matched: false,
+        });
+        if open {
             out.extend(rows);
         }
     }
@@ -325,7 +430,7 @@ pub enum Overlay {
         filter: String,
         /// Typing goes to `filter` (after `/`).
         filtering: bool,
-        /// Index into `picker_rows(index, filter)`.
+        /// Index into `picker_rows(index, filter, expanded)`.
         selected: usize,
     },
 }
@@ -443,6 +548,15 @@ pub struct Regions {
     pub repo_page: usize,
     /// Detail viewport height (for paging the README).
     pub detail_page: usize,
+    /// List area of the open list pop-up (rows start at its top).
+    pub popup: Option<Rect>,
+    /// Rows that fit in the pop-up list (for paging).
+    pub popup_page: usize,
+    /// Whole pop-up box (a click outside it closes the pop-up).
+    pub popup_box: Option<Rect>,
+    /// Unstar confirmation buttons: `y` and `n`.
+    pub confirm_yes: Option<Rect>,
+    pub confirm_no: Option<Rect>,
 }
 
 /// Lines per repo list item (name line + description line).
@@ -468,6 +582,8 @@ pub struct App {
     pub categories: Vec<(String, usize)>,
     pub cat_sel: usize,
     pub cat_list: ListState,
+    /// Scroll state of the list pop-ups (Awesome picker, languages).
+    pub popup_list: ListState,
     /// Indices into `repos` matching all filters, in display order.
     pub visible: Vec<usize>,
     pub repo_sel: usize,
@@ -516,6 +632,7 @@ impl App {
             categories: Vec::new(),
             cat_sel: 0,
             cat_list: ListState::default(),
+            popup_list: ListState::default(),
             visible: Vec::new(),
             repo_sel: 0,
             repo_list: ListState::default(),
@@ -685,13 +802,34 @@ impl App {
             self.set_status(Level::Warn, msg);
             return;
         };
-        let rows = picker_rows(index, "");
-        // Start on the chosen list, else the first choosable one.
-        let current = self.awesome.selection.as_ref().map(|s| s.label.as_str());
-        let selected = rows
-            .iter()
-            .position(|r| r.selectable() && Some(r.label.as_str()) == current)
-            .unwrap_or_else(|| Self::picker_first(&rows));
+        // Reveal the chosen list (open its section and parent) and start
+        // the cursor on it; otherwise on the first row.
+        let mut selected = 0;
+        if let Some(sel) = &self.awesome.selection {
+            for section in &index.sections {
+                for item in &section.items {
+                    let own = item.repo.as_deref() == Some(sel.repo.as_str());
+                    let child = item
+                        .children
+                        .iter()
+                        .any(|c| c.repo.as_deref() == Some(sel.repo.as_str()));
+                    if own || child {
+                        self.awesome.expanded.insert(format!("s/{}", section.name));
+                        if !item.children.is_empty() {
+                            self.awesome
+                                .expanded
+                                .insert(format!("l/{}/{}", section.name, item.name));
+                        }
+                    }
+                }
+            }
+            let rows = picker_rows(index, "", &self.awesome.expanded);
+            selected = rows
+                .iter()
+                .position(|r| r.selectable() && r.repo.as_deref() == Some(sel.repo.as_str()))
+                .unwrap_or(0);
+        }
+        self.popup_list = ListState::default();
         self.overlay = Overlay::AwesomePicker {
             filter: String::new(),
             filtering: false,
@@ -699,124 +837,201 @@ impl App {
         };
     }
 
-    /// First choosable row at or after `start` walking in `dir` (±1).
-    fn picker_seek(rows: &[PickerRow], start: isize, dir: isize) -> Option<usize> {
-        if rows.is_empty() {
-            return None; // a filter that matches nothing
-        }
-        let mut i = start.clamp(0, rows.len() as isize - 1);
-        while (0..rows.len() as isize).contains(&i) {
-            if rows[i as usize].selectable() {
-                return Some(i as usize);
+    /// The picker rows currently shown.
+    pub fn picker_view(&self) -> Vec<PickerRow> {
+        match (&self.overlay, &self.awesome.index) {
+            (Overlay::AwesomePicker { filter, .. }, Some(index)) => {
+                picker_rows(index, filter, &self.awesome.expanded)
             }
-            i += dir;
+            _ => Vec::new(),
         }
-        None
     }
 
-    /// Move the picker cursor by `delta` rows onto a choosable row: the
-    /// nearest one in the direction of travel, else the nearest behind.
-    fn picker_move(rows: &[PickerRow], selected: usize, delta: isize) -> usize {
-        if rows.is_empty() {
-            return 0;
+    fn picker_selected(&self) -> usize {
+        match &self.overlay {
+            Overlay::AwesomePicker { selected, .. } => *selected,
+            _ => 0,
         }
-        let dir = if delta < 0 { -1 } else { 1 };
-        let target = selected as isize + delta;
-        Self::picker_seek(rows, target, dir)
-            .or_else(|| Self::picker_seek(rows, target, -dir))
-            .unwrap_or(selected)
     }
 
-    /// The first choosable row that matches the filter itself, else the
-    /// first choosable one.
-    fn picker_first(rows: &[PickerRow]) -> usize {
-        rows.iter()
-            .position(|r| r.selectable() && r.matched)
-            .or_else(|| Self::picker_seek(rows, 0, 1))
-            .unwrap_or(0)
+    fn set_picker_selected(&mut self, i: usize) {
+        let len = self.picker_view().len();
+        if let Overlay::AwesomePicker { selected, .. } = &mut self.overlay {
+            *selected = i.min(len.saturating_sub(1));
+        }
     }
 
-    fn picker_last(rows: &[PickerRow]) -> usize {
-        Self::picker_seek(rows, rows.len() as isize - 1, -1).unwrap_or(0)
+    /// Move the picker cursor by `delta`, clamped.
+    fn picker_move(&mut self, delta: isize) {
+        let len = self.picker_view().len();
+        if len == 0 {
+            return;
+        }
+        let next = (self.picker_selected() as isize + delta).clamp(0, len as isize - 1);
+        self.set_picker_selected(next as usize);
     }
 
-    fn handle_picker_key(&mut self, key: KeyEvent, ctrl: bool) {
-        let index = self.awesome.index.clone().unwrap_or_default();
-        let page = (self.regions.repo_page.max(1) * REPO_ITEM_HEIGHT) as isize;
-        let mut chosen: Option<Selection> = None;
-        let mut close = false;
-        if let Overlay::AwesomePicker {
-            filter,
-            filtering,
-            selected,
-        } = &mut self.overlay
-        {
-            let rows = picker_rows(&index, filter);
-            let nav = !*filtering;
-            let mut refilter = false;
-            match key.code {
-                KeyCode::Up => *selected = Self::picker_move(&rows, *selected, -1),
-                KeyCode::Down => *selected = Self::picker_move(&rows, *selected, 1),
-                KeyCode::Char('k') if nav => *selected = Self::picker_move(&rows, *selected, -1),
-                KeyCode::Char('j') if nav => *selected = Self::picker_move(&rows, *selected, 1),
-                KeyCode::PageUp => *selected = Self::picker_move(&rows, *selected, -page),
-                KeyCode::PageDown => *selected = Self::picker_move(&rows, *selected, page),
-                KeyCode::Home => *selected = Self::picker_first(&rows),
-                KeyCode::End => *selected = Self::picker_last(&rows),
-                KeyCode::Char('g') if nav => *selected = Self::picker_first(&rows),
-                KeyCode::Char('G') if nav => *selected = Self::picker_last(&rows),
-                KeyCode::Char('/') if nav => *filtering = true,
-                KeyCode::Enter => match rows.get(*selected) {
-                    Some(PickerRow {
-                        repo: Some(repo),
-                        label,
-                        ..
-                    }) => {
-                        chosen = Some(Selection {
-                            repo: repo.clone(),
-                            label: label.clone(),
-                        })
-                    }
-                    // Enter on a filter that matches nothing just ends typing.
-                    _ => *filtering = false,
-                },
-                KeyCode::Esc if *filtering || !filter.is_empty() => {
-                    filter.clear();
-                    *filtering = false;
-                    refilter = true;
-                }
-                KeyCode::Esc => close = true,
-                KeyCode::Char('q') if nav => close = true,
-                KeyCode::Backspace if *filtering => {
-                    filter.pop();
-                    refilter = true;
-                }
-                KeyCode::Char('u') if ctrl && *filtering => {
-                    filter.clear();
-                    refilter = true;
-                }
-                KeyCode::Char(c)
-                    if *filtering && !ctrl && !c.is_control() && filter.chars().count() < 60 =>
-                {
-                    filter.push(c);
-                    refilter = true;
-                }
-                _ => {}
+    /// Open or close the expander at `i`, keeping the cursor on it.
+    fn picker_toggle(&mut self, i: usize, open: Option<bool>) {
+        let rows = self.picker_view();
+        let Some(row) = rows.get(i).filter(|r| r.expander()) else {
+            return;
+        };
+        let key = row.key.clone();
+        let want = open.unwrap_or(!row.open);
+        if want {
+            self.awesome.expanded.insert(key.clone());
+        } else {
+            self.awesome.expanded.remove(&key);
+        }
+        if let Some(pos) = self.picker_view().iter().position(|r| r.key == key) {
+            self.set_picker_selected(pos);
+        }
+    }
+
+    /// Enter or a click on the selected row: expanders toggle, lists open.
+    fn picker_activate(&mut self, i: usize) {
+        let rows = self.picker_view();
+        let Some(row) = rows.get(i) else {
+            return;
+        };
+        if row.expander() {
+            // While filtering everything is shown expanded; nothing to do.
+            if !matches!(&self.overlay, Overlay::AwesomePicker { filter, .. } if !filter.trim().is_empty())
+            {
+                self.picker_toggle(i, None);
             }
-            if refilter {
-                *selected = Self::picker_first(&picker_rows(&index, filter));
-            }
-        }
-        if close {
-            self.overlay = Overlay::None;
-        }
-        if let Some(selection) = chosen {
+        } else if let Some(repo) = row.repo.clone() {
+            let selection = Selection {
+                repo,
+                label: row.label.clone(),
+            };
             self.overlay = Overlay::None;
             if let Some(pos) = self.categories.iter().position(|(c, _)| c == AWESOME) {
                 self.cat_sel = pos;
             }
             self.focus = Focus::Repos;
             self.choose_awesome(selection, false);
+        } else {
+            self.set_status(Level::Info, "That list is hosted outside GitHub");
+        }
+    }
+
+    /// ←: collapse an open expander, else jump to the row's parent.
+    fn picker_left(&mut self) {
+        let rows = self.picker_view();
+        let i = self.picker_selected();
+        let Some(row) = rows.get(i) else {
+            return;
+        };
+        if row.expander() && row.open && self.picker_filter().is_empty() {
+            self.picker_toggle(i, Some(false));
+        } else if let Some(parent) = rows[..i].iter().rposition(|r| r.depth < row.depth) {
+            self.set_picker_selected(parent);
+        }
+    }
+
+    /// →: expand a closed expander, else step into its first child.
+    fn picker_right(&mut self) {
+        let rows = self.picker_view();
+        let i = self.picker_selected();
+        match rows.get(i) {
+            Some(row) if row.expander() && !row.open => self.picker_toggle(i, Some(true)),
+            Some(row) if row.expander() => self.set_picker_selected(i + 1),
+            _ => {}
+        }
+    }
+
+    fn picker_filter(&self) -> String {
+        match &self.overlay {
+            Overlay::AwesomePicker { filter, .. } => filter.trim().to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn handle_picker_key(&mut self, key: KeyEvent, ctrl: bool) {
+        let Overlay::AwesomePicker {
+            filter, filtering, ..
+        } = &self.overlay
+        else {
+            return;
+        };
+        let (filtering, has_filter) = (*filtering, !filter.is_empty());
+        let nav = !filtering;
+        let page = (self.regions.popup_page.max(1)) as isize;
+        let mut edit: Option<FilterEdit> = None;
+        match key.code {
+            KeyCode::Up => self.picker_move(-1),
+            KeyCode::Down => self.picker_move(1),
+            KeyCode::Char('k') if nav => self.picker_move(-1),
+            KeyCode::Char('j') if nav => self.picker_move(1),
+            KeyCode::PageUp => self.picker_move(-page),
+            KeyCode::PageDown => self.picker_move(page),
+            KeyCode::Home => self.set_picker_selected(0),
+            KeyCode::End => self.set_picker_selected(usize::MAX),
+            KeyCode::Char('g') if nav => self.set_picker_selected(0),
+            KeyCode::Char('G') if nav => self.set_picker_selected(usize::MAX),
+            KeyCode::Right => self.picker_right(),
+            KeyCode::Left => self.picker_left(),
+            KeyCode::Char('l') if nav => self.picker_right(),
+            KeyCode::Char('h') if nav => self.picker_left(),
+            KeyCode::Char('/') if nav => {
+                if let Overlay::AwesomePicker { filtering, .. } = &mut self.overlay {
+                    *filtering = true;
+                }
+            }
+            KeyCode::Enter => {
+                let i = self.picker_selected();
+                if filtering && self.picker_view().get(i).is_none_or(|r| r.expander()) {
+                    // Ends typing; the filtered tree stays.
+                    if let Overlay::AwesomePicker { filtering, .. } = &mut self.overlay {
+                        *filtering = false;
+                    }
+                } else {
+                    self.picker_activate(i);
+                }
+            }
+            KeyCode::Esc if filtering || has_filter => edit = Some(FilterEdit::Clear),
+            KeyCode::Esc => self.overlay = Overlay::None,
+            KeyCode::Char('q') if nav => self.overlay = Overlay::None,
+            KeyCode::Backspace if filtering => edit = Some(FilterEdit::Pop),
+            KeyCode::Char('u') if ctrl && filtering => edit = Some(FilterEdit::Clear),
+            KeyCode::Char(c) if filtering && !ctrl && !c.is_control() => {
+                edit = Some(FilterEdit::Push(c))
+            }
+            _ => {}
+        }
+        if let Some(edit) = edit {
+            // Keep the cursor on the same row when it is still shown (e.g.
+            // clearing the filter returns to the tree), else on the first
+            // match.
+            let keep = self
+                .picker_view()
+                .get(self.picker_selected())
+                .map(|r| r.key.clone());
+            if let Overlay::AwesomePicker {
+                filter, filtering, ..
+            } = &mut self.overlay
+            {
+                match edit {
+                    FilterEdit::Clear => filter.clear(),
+                    FilterEdit::Pop => {
+                        filter.pop();
+                    }
+                    FilterEdit::Push(c) if filter.chars().count() < 60 => filter.push(c),
+                    FilterEdit::Push(_) => {}
+                }
+                if filter.is_empty() && key.code == KeyCode::Esc {
+                    *filtering = false;
+                }
+            }
+            let rows = self.picker_view();
+            let pos = keep
+                .and_then(|k| rows.iter().position(|r| r.key == k))
+                .filter(|_| self.picker_filter().is_empty())
+                .or_else(|| rows.iter().position(|r| r.selectable() && r.matched))
+                .unwrap_or(0);
+            self.set_picker_selected(pos);
         }
     }
 
@@ -2348,69 +2563,6 @@ mod tests {
     }
 
     #[test]
-    fn picker_skips_headers_filters_and_chooses() {
-        let mut a = app();
-        a.set_awesome(Some(index()), None);
-        to_awesome(&mut a);
-        assert!(a.visible.is_empty(), "nothing chosen yet");
-        a.handle_key(key(KeyCode::Enter));
-        let Overlay::AwesomePicker { selected, .. } = a.overlay else {
-            panic!("picker not open: {:?}", a.overlay)
-        };
-        let rows = picker_rows(a.awesome.index.as_ref().unwrap(), "");
-        assert_eq!(
-            rows[selected].name, "Node.js",
-            "first choosable, not the section"
-        );
-
-        // Walking down never lands on the "Linux" group (no link of its own).
-        let mut seen = Vec::new();
-        for _ in 0..rows.len() {
-            a.handle_key(ch('j'));
-            let Overlay::AwesomePicker { selected, .. } = a.overlay else {
-                unreachable!()
-            };
-            seen.push(rows[selected].name.clone());
-        }
-        assert!(
-            seen.iter().all(|n| n != "Linux" && n != "Platforms"),
-            "{seen:?}"
-        );
-        assert_eq!(
-            seen.last().map(String::as_str),
-            Some("Rust"),
-            "clamped at the end"
-        );
-
-        // `/` filters; letters are text then (j is not "down").
-        a.handle_key(ch('/'));
-        for c in "cross j".chars() {
-            a.handle_key(ch(c));
-        }
-        let Overlay::AwesomePicker { ref filter, .. } = a.overlay else {
-            unreachable!()
-        };
-        assert_eq!(filter, "cross j");
-        for _ in 0..2 {
-            a.handle_key(key(KeyCode::Backspace));
-        }
-        a.handle_key(key(KeyCode::Enter));
-        assert_eq!(a.overlay, Overlay::None);
-        assert_eq!(a.focus, Focus::Repos);
-        assert!(a.in_awesome());
-        assert_eq!(
-            a.drain_effects(),
-            vec![Effect::OpenAwesomeList {
-                selection: sel(
-                    "bcoe/awesome-cross-platform-nodejs",
-                    "Node.js › Cross-Platform"
-                ),
-                force: false
-            }]
-        );
-    }
-
-    #[test]
     fn picker_esc_clears_filter_then_closes() {
         let mut a = app();
         a.set_awesome(Some(index()), None);
@@ -2584,15 +2736,172 @@ mod tests {
         assert_eq!(a.category_at_row(3), Some(2));
     }
 
+    fn view_names(a: &App) -> Vec<String> {
+        a.picker_view()
+            .iter()
+            .map(|r| format!("{}{}", "  ".repeat(r.depth as usize), r.name))
+            .collect()
+    }
+
+    fn picker_cursor(a: &App) -> String {
+        a.picker_view()[a.picker_selected()].name.clone()
+    }
+
+    fn open_picker() -> App {
+        let mut a = app();
+        a.set_awesome(Some(index()), None);
+        to_awesome(&mut a);
+        a.handle_key(key(KeyCode::Enter));
+        assert!(matches!(a.overlay, Overlay::AwesomePicker { .. }));
+        a
+    }
+
     #[test]
-    fn picker_rows_filter_keeps_headers_and_parents() {
+    fn picker_tree_starts_collapsed_and_expands_level_by_level() {
+        let mut a = open_picker();
+        assert_eq!(view_names(&a), ["Platforms", "Programming Languages"]);
+        assert_eq!(picker_cursor(&a), "Platforms");
+
+        // Programming Languages -> its lists.
+        a.handle_key(ch('j'));
+        a.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            view_names(&a),
+            [
+                "Platforms",
+                "Programming Languages",
+                "  JavaScript",
+                "  Rust"
+            ]
+        );
+        assert_eq!(picker_cursor(&a), "Programming Languages", "cursor stays");
+
+        // JavaScript is a list with sub-lists: its own list comes first.
+        a.handle_key(ch('j'));
+        a.handle_key(key(KeyCode::Right));
+        assert_eq!(
+            view_names(&a)[2..7],
+            [
+                "  JavaScript",
+                "    JavaScript (all)",
+                "    Promises",
+                "    Standard Style",
+                "    Must Watch Talks"
+            ]
+        );
+        let rows = a.picker_view();
+        assert_eq!((rows[2].kind, rows[2].children), (PickerKind::Parent, 3));
+        assert_eq!(rows[3].repo.as_deref(), Some("sorrycc/awesome-javascript"));
+        assert_eq!(rows[3].label, "JavaScript");
+        assert_eq!(rows[4].label, "JavaScript › Promises");
+
+        // → on an open parent steps in; Enter on "(all)" opens the parent.
+        a.handle_key(key(KeyCode::Right));
+        assert_eq!(picker_cursor(&a), "JavaScript (all)");
+        a.handle_key(key(KeyCode::Enter));
+        assert_eq!(a.overlay, Overlay::None);
+        assert_eq!(
+            a.drain_effects(),
+            vec![Effect::OpenAwesomeList {
+                selection: sel("sorrycc/awesome-javascript", "JavaScript"),
+                force: false
+            }]
+        );
+    }
+
+    #[test]
+    fn picker_left_collapses_or_jumps_to_the_parent() {
+        let mut a = open_picker();
+        a.handle_key(key(KeyCode::Enter)); // open Platforms
+        // Down to Linux (a link-less group): no "(all)" row inside it.
+        while picker_cursor(&a) != "Linux" {
+            a.handle_key(ch('j'));
+        }
+        a.handle_key(key(KeyCode::Enter));
+        let names = view_names(&a);
+        let linux = names.iter().position(|n| n == "  Linux").unwrap();
+        assert_eq!(names[linux + 1], "    Containers");
+        a.handle_key(ch('j')); // Containers
+        a.handle_key(key(KeyCode::Left)); // leaf: jump to its parent
+        assert_eq!(picker_cursor(&a), "Linux");
+        a.handle_key(key(KeyCode::Left)); // open: collapse
+        assert!(!view_names(&a).contains(&"    Containers".to_string()));
+        a.handle_key(ch('h')); // closed: jump to the section
+        assert_eq!(picker_cursor(&a), "Platforms");
+        a.handle_key(ch('h')); // open section: collapse
+        assert_eq!(view_names(&a), ["Platforms", "Programming Languages"]);
+    }
+
+    #[test]
+    fn picker_filter_expands_matches_and_clearing_restores_the_tree() {
+        let mut a = open_picker();
+        a.handle_key(ch('/'));
+        for c in "screensav".chars() {
+            a.handle_key(ch(c));
+        }
+        assert_eq!(view_names(&a), ["Platforms", "  macOS", "    Screensavers"]);
+        assert_eq!(picker_cursor(&a), "Screensavers", "cursor on the match");
+        for c in "zzz".chars() {
+            a.handle_key(ch(c)); // matches nothing: no panic, empty view
+        }
+        assert!(a.picker_view().is_empty());
+        a.handle_key(key(KeyCode::Down));
+        a.handle_key(key(KeyCode::Enter));
+        a.handle_key(key(KeyCode::Esc)); // clears the filter
+        assert_eq!(
+            view_names(&a),
+            ["Platforms", "Programming Languages"],
+            "tree as before"
+        );
+        // A filter matching a parent shows its "(all)" row and children.
+        a.handle_key(ch('/'));
+        for c in "javascript".chars() {
+            a.handle_key(ch(c));
+        }
+        assert!(view_names(&a).contains(&"    JavaScript (all)".to_string()));
+    }
+
+    #[test]
+    fn picker_reopens_as_left_and_reveals_the_chosen_list() {
+        let mut a = open_picker();
+        a.handle_key(key(KeyCode::Enter)); // open Platforms
+        a.handle_key(key(KeyCode::Esc)); // close
+        a.handle_key(key(KeyCode::Enter)); // reopen (sidebar still on Awesome)
+        assert!(
+            view_names(&a).contains(&"  Node.js".to_string()),
+            "still expanded"
+        );
+
+        // With a sub-list chosen, reopening reveals and selects it.
+        let mut b = app();
+        b.set_awesome(
+            Some(index()),
+            Some(sel("wbinnssmith/awesome-promises", "JavaScript › Promises")),
+        );
+        to_awesome(&mut b);
+        b.handle_key(key(KeyCode::Left));
+        b.handle_key(key(KeyCode::Enter));
+        assert_eq!(picker_cursor(&b), "Promises");
+    }
+
+    #[test]
+    fn picker_rows_kinds_and_non_github_lists() {
         let idx = index();
-        let rows = picker_rows(&idx, "screensav");
-        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["Platforms", "macOS", "Screensavers"]);
-        assert_eq!(rows[2].label, "macOS › Screensavers");
-        assert!(!rows[1].selectable(), "link-less group");
-        assert!(picker_rows(&idx, "zzzz").is_empty());
+        let all: HashSet<String> = picker_rows(&idx, "", &HashSet::new())
+            .into_iter()
+            .map(|r| r.key)
+            .collect();
+        let rows = picker_rows(&idx, "", &all);
+        let open: HashSet<String> = rows.iter().map(|r| r.key.clone()).collect();
+        let rows = picker_rows(&idx, "", &open);
+        let kind = |n: &str| rows.iter().find(|r| r.name == n).unwrap().kind;
+        assert_eq!(kind("Platforms"), PickerKind::Section);
+        assert_eq!(kind("Linux"), PickerKind::Group);
+        assert_eq!(kind("Node.js"), PickerKind::Parent);
+        assert_eq!(kind("Node.js (all)"), PickerKind::All);
+        assert_eq!(kind("watchOS"), PickerKind::List);
+        assert!(rows.iter().all(|r| !r.expander() || !r.selectable()));
+        assert!(picker_rows(&idx, "zzzz", &open).is_empty());
     }
 
     #[test]

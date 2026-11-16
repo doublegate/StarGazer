@@ -16,7 +16,6 @@
 
 use crate::app::{
     AWESOME, App, CategorySort, Focus, Level, Overlay, PickerRow, REPO_ITEM_HEIGHT, Readme,
-    picker_rows,
 };
 use crate::cache::StarredRepo;
 use crate::text::{sanitize, truncate_width, width};
@@ -805,12 +804,7 @@ impl Ui {
     ) {
         let t = &self.theme;
         let g = &self.glyphs;
-        let rows: Vec<PickerRow> = app
-            .awesome
-            .index
-            .as_ref()
-            .map(|i| picker_rows(i, filter))
-            .unwrap_or_default();
+        let rows: Vec<PickerRow> = app.picker_view();
         let area = f.area();
         let (rect, block) = self.popup(
             f,
