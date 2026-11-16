@@ -72,6 +72,9 @@ impl StarredRepo {
         // Rule-based categories are ours, but awesome rows carry a list's
         // own headings here.
         self.category = sanitize(&self.category);
+        // Displayed in the details pane and copied with `y`, so no control
+        // or bidi characters (agy review of PR #2).
+        self.html_url = sanitize(&self.html_url);
         self
     }
 
@@ -263,6 +266,24 @@ pub fn dedupe(repos: Vec<StarredRepo>) -> Vec<StarredRepo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitized_cleans_the_url_too() {
+        let r = StarredRepo {
+            html_url: "https://github.com/o/r\u{202E}\u{1b}[31m".into(),
+            category: "Ru\u{200B}st".into(),
+            ..StarredRepo::test_default()
+        }
+        .sanitized();
+        assert!(
+            !r.html_url
+                .chars()
+                .any(|c| c.is_control() || c == '\u{202E}'),
+            "{:?}",
+            r.html_url
+        );
+        assert_eq!(r.category, crate::text::sanitize("Ru\u{200B}st"));
+    }
 
     fn r(id: u64) -> StarredRepo {
         StarredRepo {

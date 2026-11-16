@@ -407,6 +407,15 @@ pub fn parse_index(md: &str) -> AwesomeIndex {
     let mut pending_children: Vec<ListRef> = Vec::new();
     let mut lists = 0usize;
     walk(bounded(md), |depth, path, block| {
+        // A list closing now owns the sub-lists that closed before it. Taken
+        // here, before any early return, so a skipped list's sub-lists are
+        // dropped with it instead of attaching to the next list (agy review
+        // of PR #7).
+        let children = if depth == 1 {
+            std::mem::take(&mut pending_children)
+        } else {
+            Vec::new()
+        };
         // Sections are the H2 headings; entries outside one are preamble.
         let Some(section) = path.first() else {
             return true;
@@ -452,7 +461,7 @@ pub fn parse_index(md: &str) -> AwesomeIndex {
             pending_children.push(item);
         } else if let Some(section) = index.sections.last_mut() {
             let mut item = item;
-            item.children = std::mem::take(&mut pending_children);
+            item.children = children;
             section.items.push(item);
         }
         lists += 1;
@@ -626,12 +635,29 @@ impl Store {
         crate::cache::write_atomic(path, &serde_json::to_vec(value)?)
     }
 
+    /// The cached index, if it is of this version. Its strings are
+    /// sanitized again on load: the file is outside our control between
+    /// runs, and the picker draws them (agy review of PR #7).
     pub fn load_index(&self) -> Option<IndexCache> {
-        Self::load(&self.index_path())
+        let mut cache: IndexCache = Self::load(&self.index_path())?;
+        if cache.version != STORE_VERSION {
+            return None;
+        }
+        fn clean_ref(l: &mut ListRef) {
+            l.name = clean(&l.name, MAX_NAME);
+            l.desc = l.desc.as_deref().map(|d| clean(d, MAX_DESC));
+            l.children.iter_mut().for_each(clean_ref);
+        }
+        for s in &mut cache.index.sections {
+            s.name = clean(&s.name, MAX_HEADING);
+            s.items.iter_mut().for_each(clean_ref);
+        }
+        Some(cache)
     }
 
     pub fn load_list(&self, repo: &str) -> Option<ListCache> {
-        Self::load::<ListCache>(&self.list_path(repo)?).filter(|c| c.repo == repo)
+        Self::load::<ListCache>(&self.list_path(repo)?)
+            .filter(|c| c.repo == repo && c.version == STORE_VERSION)
     }
 
     pub fn last_selection(&self) -> Option<Selection> {
@@ -1150,6 +1176,53 @@ mod tests {
             .collect();
         let idx = parse_index(&format!("## S\n\n{md}"));
         assert_eq!(idx.sections[0].items.len(), MAX_LISTS);
+    }
+
+    #[test]
+    fn a_skipped_list_does_not_hand_its_sub_lists_to_the_next() {
+        // agy review of PR #7: children close before their parent, so a
+        // parent dropped for a bad link left its children pending.
+        let md = "## S\n\n- [Bad](javascript:alert(1))\n\t- [Child](https://github.com/o/child)\n- [Good](https://github.com/o/good)\n";
+        let idx = parse_index(md);
+        let good = &idx.sections[0].items[0];
+        assert_eq!(good.name, "Good");
+        assert!(good.children.is_empty(), "{:?}", good.children);
+    }
+
+    #[test]
+    fn cached_index_is_sanitized_and_version_checked_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::beside(&dir.path().join("stars.json"));
+        let hostile = AwesomeIndex {
+            sections: vec![Section {
+                name: "Sec\u{202E}tion".into(),
+                items: vec![ListRef {
+                    name: "na\u{200D}\u{1F527}me".into(),
+                    desc: Some("d\tesc".into()),
+                    url: None,
+                    repo: None,
+                    children: Vec::new(),
+                }],
+            }],
+        };
+        let write = |version| {
+            let c = IndexCache {
+                version,
+                etag: None,
+                fetched_at: None,
+                index: hostile.clone(),
+            };
+            crate::cache::write_atomic(&store.index_path(), &serde_json::to_vec(&c).unwrap())
+                .unwrap();
+        };
+        write(STORE_VERSION);
+        let loaded = store.load_index().unwrap();
+        let s = &loaded.index.sections[0];
+        assert_eq!(s.name, sanitize("Sec\u{202E}tion"));
+        assert_eq!(s.items[0].name, sanitize("na\u{200D}\u{1F527}me"));
+        assert!(!s.items[0].desc.as_deref().unwrap().contains('\t'));
+        write(STORE_VERSION + 1);
+        assert!(store.load_index().is_none(), "other version: ignored");
     }
 
     #[test]

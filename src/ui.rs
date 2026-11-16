@@ -366,7 +366,7 @@ impl Ui {
             app.repo_sel + 1
         };
         let mut title = format!(" {cat} {} {pos}/{} ", self.glyphs.sep, app.visible.len());
-        if !app.search.trim().is_empty() {
+        if app.search_active() {
             // Results are ranked by relevance while searching, not by the
             // sort mode shown in the header.
             title.push_str(&format!(
@@ -1011,6 +1011,23 @@ fn strip_inline(s: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
+        // [![alt](img)](target) -> dropped whole (a linked badge); matching
+        // the outer `[` with the image's `]` printed `![alt](target)` (agy
+        // review of PR #2).
+        if c == '['
+            && chars.get(i + 1) == Some(&'!')
+            && chars.get(i + 2) == Some(&'[')
+            && let Some(img_end) = link_end(&chars, i + 2)
+            && chars.get(img_end) == Some(&']')
+            && let Some(end) = chars
+                .get(img_end + 1)
+                .filter(|&&c| c == '(')
+                .and_then(|_| chars[img_end + 1..].iter().position(|&c| c == ')'))
+                .map(|p| p + img_end + 2)
+        {
+            i = end;
+            continue;
+        }
         // ![alt](url) -> dropped
         if c == '!'
             && chars.get(i + 1) == Some(&'[')
@@ -1149,6 +1166,15 @@ pub fn markdown_lines(md: &str, t: &Theme, g: &Glyphs) -> Vec<Line<'static>> {
 mod tests {
     use super::*;
     use crate::config::ThemeName;
+
+    #[test]
+    fn linked_badges_are_dropped_whole() {
+        // agy review of PR #2: this rendered as "![CI](target)".
+        let s = strip_inline(
+            "Build [![CI](https://x/badge.svg)](https://x/actions) ok [docs](https://d)",
+        );
+        assert_eq!(s, "Build  ok docs");
+    }
 
     #[test]
     fn star_formatting() {

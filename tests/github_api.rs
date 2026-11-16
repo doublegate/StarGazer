@@ -223,6 +223,42 @@ async fn graphql_used_with_token_and_paginates() {
 }
 
 #[tokio::test]
+async fn graphql_sync_clears_an_outdated_rest_etag() {
+    // agy review of PR #2: a REST ETag kept across GraphQL syncs could later
+    // let an anonymous run accept a 304 against a stale state.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"data": {"user": {"starredRepositories": {
+                "pageInfo": {"hasNextPage": false, "endCursor": null},
+                "edges": [gql_edge(7)]
+            }}}}),
+        ))
+        .mount(&server)
+        .await;
+    let client = GitHubClient::new(server.uri(), Some("t0ken".into())).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let before = StarCache {
+        username: "octocat".into(),
+        rest_etag: Some("\"old\"".into()),
+        ..Default::default()
+    };
+    let cache = sync(
+        &client,
+        "octocat",
+        before,
+        &dir.path().join("s.json"),
+        SyncMode::Full,
+        7,
+        &mut noop(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(cache.rest_etag, None);
+}
+
+#[tokio::test]
 async fn full_sync_drops_unstarred_repos() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

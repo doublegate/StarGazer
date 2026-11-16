@@ -168,7 +168,13 @@ pub fn sort_repos(repos: &mut [StarredRepo], mode: SortMode) {
 
 /// Ordering for `mode`; ties broken by lowercase name for stable output.
 pub fn compare_repos(a: &StarredRepo, b: &StarredRepo, mode: SortMode) -> std::cmp::Ordering {
-    let by_name = || a.full_name.to_lowercase().cmp(&b.full_name.to_lowercase());
+    // Case-insensitive without allocating (agy review of PR #6).
+    let by_name = || {
+        a.full_name
+            .bytes()
+            .map(|c| c.to_ascii_lowercase())
+            .cmp(b.full_name.bytes().map(|c| c.to_ascii_lowercase()))
+    };
     match mode {
         SortMode::Stars => b
             .stargazers_count
@@ -757,6 +763,12 @@ impl App {
             (true, SortMode::StarredAt) => "List order",
             _ => self.sort.label(self.ascii),
         }
+    }
+
+    /// A search that actually filters: has at least one word (a query of
+    /// only punctuation does not, and must not say "by relevance").
+    pub fn search_active(&self) -> bool {
+        !Query::parse(&self.search).is_empty()
     }
 
     /// The title bar's sort label: the sort of the focused pane, since the

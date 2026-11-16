@@ -179,7 +179,10 @@ pub async fn sync(
     } else if !result.not_modified {
         cache.repos = merge(new, std::mem::take(&mut cache.repos));
     }
-    if result.etag.is_some() {
+    // A 304 keeps the ETag it confirmed; anything else replaces it, so a
+    // GraphQL sync (which has none) clears a REST ETag it has outdated
+    // (agy review of PR #2).
+    if !result.not_modified {
         cache.rest_etag = result.etag;
     }
     let _ = refresh_categories(&mut cache);

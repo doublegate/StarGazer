@@ -418,9 +418,7 @@ impl GitHubClient {
             Err(GitHubError::NotFound(_)) => return Ok(None),
             Err(e) => return Err(e),
         };
-        let bytes = resp.bytes().await?;
-        let cut = &bytes[..bytes.len().min(MAX_README_BYTES)];
-        Ok(Some(String::from_utf8_lossy(cut).into_owned()))
+        Ok(Some(read_capped(resp, MAX_README_BYTES).await?))
     }
 
     /// README of `owner/repo` for parsing (awesome index and lists): a
@@ -457,10 +455,8 @@ impl GitHubClient {
             .get(header::ETAG)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        let bytes = resp.bytes().await?;
-        let cut = &bytes[..bytes.len().min(max_bytes)];
         Ok(ReadmeText {
-            text: Some(String::from_utf8_lossy(cut).into_owned()),
+            text: Some(read_capped(resp, max_bytes).await?),
             etag: new_etag,
         })
     }
@@ -682,6 +678,32 @@ pub fn parse_rest_page(body: &str) -> Result<(Vec<StarredRepo>, usize), GitHubEr
         }
     }
     Ok((repos, skipped))
+}
+
+/// Body text of `resp`, read chunk by chunk and stopped at `max` bytes, so a
+/// huge response is never buffered whole; cut at a UTF-8 boundary so the cap
+/// cannot leave a broken character (agy reviews of PRs #2 and #7).
+async fn read_capped(mut resp: Response, max: usize) -> Result<String, GitHubError> {
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < max {
+        match resp.chunk().await? {
+            Some(chunk) => buf.extend_from_slice(&chunk[..chunk.len().min(max - buf.len())]),
+            None => break,
+        }
+    }
+    Ok(utf8_prefix(&buf))
+}
+
+/// `bytes` as text, dropping a truncated character at the end; any invalid
+/// bytes elsewhere become U+FFFD as before.
+pub fn utf8_prefix(bytes: &[u8]) -> String {
+    let end = match std::str::from_utf8(bytes) {
+        Ok(_) => bytes.len(),
+        // An incomplete sequence at the very end is the cap's doing.
+        Err(e) if e.error_len().is_none() => e.valid_up_to(),
+        Err(_) => bytes.len(),
+    };
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
 /// Result of [`GitHubClient::fetch_readme_text`].
@@ -1177,6 +1199,21 @@ mod tests {
             } => assert_eq!(message, "Resource not accessible"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn utf8_prefix_drops_only_a_truncated_last_character() {
+        let s = "aé€😀".as_bytes();
+        for cut in 0..=s.len() {
+            let t = utf8_prefix(&s[..cut]);
+            assert!(!t.contains('\u{FFFD}'), "cut {cut}: {t:?}");
+            assert!("aé€😀".starts_with(&t));
+        }
+        assert_eq!(
+            utf8_prefix(b"a\xffb"),
+            "a\u{FFFD}b",
+            "invalid bytes inside are kept as before"
+        );
     }
 
     #[test]

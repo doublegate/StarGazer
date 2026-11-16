@@ -140,10 +140,13 @@ fn run_effect(
             spawn_sync(ctx, mode, tx.clone(), Arc::clone(lock));
         }
         Effect::Open(url) => {
-            let result = if url.starts_with("https://github.com/") {
-                open::that_detached(&url).map_err(|e| e.to_string())
-            } else {
-                Err(format!("refusing to open non-GitHub URL {url}"))
+            // Starred repos: visible-ASCII https://github.com/ URLs only (the
+            // URL comes from the API or the cache file; agy review of PR #2).
+            let result = match awesome::clean_url(&url) {
+                Some(u) if u.starts_with("https://github.com/") => {
+                    open::that_detached(&u).map_err(|e| e.to_string())
+                }
+                _ => Err("refusing to open a non-GitHub URL".to_string()),
             };
             app.apply(BgMsg::Opened(result));
         }
