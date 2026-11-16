@@ -189,6 +189,15 @@ pub fn github_repo(url: &str) -> Option<String> {
     crate::github::validate_full_name(&full).ok().map(|_| full)
 }
 
+/// A repository link in canonical form: `https://github.com/owner/repo`
+/// when it is one (dropping any query, fragment or `.git`), else as given.
+fn canonical(url: &str, repo: Option<&str>) -> String {
+    match repo {
+        Some(r) => format!("https://github.com/{r}"),
+        None => url.to_string(),
+    }
+}
+
 /// Split "Name - description" style text at the first dash separator.
 fn split_dash(text: &str) -> (String, Option<String>) {
     for sep in [" - ", " – ", " — "] {
@@ -394,12 +403,12 @@ pub fn parse_index(md: &str) -> AwesomeIndex {
             Some((url, text)) => {
                 let url = clean_url(&url);
                 let Some(url) = url else { return true };
-                let url = url.trim_end_matches("#readme").to_string();
+                let repo = github_repo(&url);
                 ListRef {
                     name: clean(&text, MAX_NAME),
                     desc: description(&block.after),
-                    repo: github_repo(&url),
-                    url: Some(url),
+                    url: Some(canonical(url.trim_end_matches("#readme"), repo.as_deref())),
+                    repo,
                     children: Vec::new(),
                 }
             }
@@ -468,9 +477,10 @@ pub fn parse_list(md: &str) -> Vec<Entry> {
         } else {
             description(&block.after)
         };
+        let repo = github_repo(&url);
         entries.push(Entry {
-            repo: github_repo(&url),
-            url: url.trim_end_matches("#readme").to_string(),
+            url: canonical(url.trim_end_matches("#readme"), repo.as_deref()),
+            repo,
             name,
             desc,
             path: path.to_vec(),
@@ -560,6 +570,11 @@ impl Store {
         Self {
             dir: parent.join("awesome"),
         }
+    }
+
+    /// Directory holding the awesome index, lists and state.
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     fn index_path(&self) -> PathBuf {
@@ -1033,6 +1048,20 @@ mod tests {
             ranks,
             (0..e.len() as u32).collect::<Vec<_>>(),
             "README order"
+        );
+    }
+
+    #[test]
+    fn github_links_are_stored_in_canonical_form() {
+        let md = "## T\n\n- [a](https://github.com/o/r?x;curl|sh) - q\n- [b](https://github.com/o/s.git#readme)\n- [c](https://example.com/p?q=1)\n";
+        let urls: Vec<String> = parse_list(md).into_iter().map(|e| e.url).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://github.com/o/r",
+                "https://github.com/o/s",
+                "https://example.com/p?q=1"
+            ]
         );
     }
 

