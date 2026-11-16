@@ -224,6 +224,7 @@ fn awesome_app(ascii: bool) -> App {
             repo: "o/awesome-x".into(),
             label,
         }),
+        false,
     );
     app.apply(BgMsg::AwesomeList {
         repo: "o/awesome-x".into(),

@@ -820,35 +820,50 @@ pub fn parse_repos_meta(
             message,
         });
     };
-    Ok(repos
+    // Only GitHub's own verdict makes a repository "missing" (the caller
+    // caches that and does not ask again until a full refresh). Any other
+    // error on an alias, or a node that does not parse, fails the batch so
+    // the lookup is retried instead (PR #7 review).
+    for e in &resp.errors {
+        let missing = matches!(e.kind.as_deref(), Some("NOT_FOUND" | "FORBIDDEN"));
+        if !missing {
+            let message: String = e.message.chars().take(200).collect();
+            return Err(GitHubError::Api {
+                status: 200,
+                message,
+            });
+        }
+    }
+    repos
         .iter()
         .enumerate()
         .map(|(k, (slot, _))| {
-            let meta = data
-                .get(&format!("r{k}"))
-                .filter(|v| !v.is_null())
-                .and_then(|v| serde_json::from_value::<Node>(v.clone()).ok())
-                .map(|n| RepoMeta {
-                    name_with_owner: n.name_with_owner,
-                    database_id: n.database_id.unwrap_or(0),
-                    stargazer_count: n.stargazer_count,
-                    description: n.description,
-                    language: n.primary_language.map(|l| l.name),
-                    topics: n
-                        .repository_topics
-                        .nodes
-                        .into_iter()
-                        .map(|t| t.topic.name)
-                        .collect(),
-                    pushed_at: n.pushed_at,
-                    updated_at: n.updated_at,
-                    archived: n.is_archived,
-                    fork: n.is_fork,
-                    url: n.url,
-                });
-            (*slot, meta)
+            let node = match data.get(&format!("r{k}")) {
+                None | Some(serde_json::Value::Null) => return Ok((*slot, None)),
+                Some(v) => serde_json::from_value::<Node>(v.clone())
+                    .map_err(|e| GitHubError::Parse(format!("repository r{k}: {e}")))?,
+            };
+            let meta = Some(node).map(|n| RepoMeta {
+                name_with_owner: n.name_with_owner,
+                database_id: n.database_id.unwrap_or(0),
+                stargazer_count: n.stargazer_count,
+                description: n.description,
+                language: n.primary_language.map(|l| l.name),
+                topics: n
+                    .repository_topics
+                    .nodes
+                    .into_iter()
+                    .map(|t| t.topic.name)
+                    .collect(),
+                pushed_at: n.pushed_at,
+                updated_at: n.updated_at,
+                archived: n.is_archived,
+                fork: n.is_fork,
+                url: n.url,
+            });
+            Ok((*slot, meta))
         })
-        .collect())
+        .collect()
 }
 
 /// One parsed GraphQL page.
@@ -1187,6 +1202,39 @@ mod tests {
             (7125, Some("Rust"))
         );
         assert_eq!(got[1], (2, None), "missing repo keeps its slot");
+    }
+
+    #[test]
+    fn repos_meta_only_not_found_or_forbidden_means_missing() {
+        // PR #7 review (Codex): any other error used to be cached as a
+        // missing repository and never retried.
+        let repos = [(0, ("o", "r")), (1, ("o", "s"))];
+        let node = r#"{"nameWithOwner":"o/r","databaseId":1,"stargazerCount":5,
+            "description":null,"url":"https://github.com/o/r","primaryLanguage":null,
+            "pushedAt":null,"updatedAt":"2026-11-01T00:00:00Z","isArchived":false,"isFork":false}"#;
+        let forbidden = format!(
+            r#"{{"data":{{"r0":{node},"r1":null}},"errors":[{{"type":"FORBIDDEN","path":["r1"],"message":"SAML"}}]}}"#
+        );
+        let ok = parse_repos_meta(&forbidden, &repos).unwrap();
+        assert_eq!(ok[1], (1, None), "inaccessible counts as missing");
+
+        let transient = format!(
+            r#"{{"data":{{"r0":{node},"r1":null}},"errors":[{{"type":"SERVICE_UNAVAILABLE","path":["r1"],"message":"try later"}}]}}"#
+        );
+        assert!(matches!(
+            parse_repos_meta(&transient, &repos),
+            Err(GitHubError::Api { .. })
+        ));
+        let untyped = format!(
+            r#"{{"data":{{"r0":{node},"r1":null}},"errors":[{{"message":"Something went wrong"}}]}}"#
+        );
+        assert!(parse_repos_meta(&untyped, &repos).is_err());
+
+        let malformed = r#"{"data":{"r0":{"nameWithOwner":7},"r1":null}}"#;
+        assert!(matches!(
+            parse_repos_meta(malformed, &repos),
+            Err(GitHubError::Parse(_))
+        ));
     }
 
     #[test]

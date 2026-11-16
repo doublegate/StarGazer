@@ -761,11 +761,17 @@ impl App {
     }
 
     /// Startup: the cached index and the last chosen list (shown from the
-    /// cache when fresh, else fetched).
-    pub fn set_awesome(&mut self, index: Option<AwesomeIndex>, selection: Option<Selection>) {
+    /// cache when fresh, else fetched). `refresh` (`--refresh`) forces the
+    /// list to be fetched again, like a full refresh does.
+    pub fn set_awesome(
+        &mut self,
+        index: Option<AwesomeIndex>,
+        selection: Option<Selection>,
+        refresh: bool,
+    ) {
         self.awesome.index = index;
         if let Some(sel) = selection {
-            self.choose_awesome(sel, false);
+            self.choose_awesome(sel, refresh);
         }
     }
 
@@ -2592,7 +2598,7 @@ mod tests {
     /// `app()` with the index loaded and "o/awesome-x" chosen and delivered.
     fn awesome_app() -> App {
         let mut a = app();
-        a.set_awesome(Some(index()), Some(sel("o/awesome-x", "Node.js")));
+        a.set_awesome(Some(index()), Some(sel("o/awesome-x", "Node.js")), false);
         a.drain_effects();
         a.apply(BgMsg::AwesomeList {
             repo: "o/awesome-x".into(),
@@ -2623,9 +2629,24 @@ mod tests {
     }
 
     #[test]
+    fn startup_refresh_forces_the_restored_list() {
+        // PR #7 review (Codex): `--refresh` refreshed the stars and index
+        // but showed the restored list from a fresh cache.
+        let mut a = app();
+        a.set_awesome(Some(index()), Some(sel("o/awesome-x", "Node.js")), true);
+        assert_eq!(
+            a.drain_effects(),
+            vec![Effect::OpenAwesomeList {
+                selection: sel("o/awesome-x", "Node.js"),
+                force: true
+            }]
+        );
+    }
+
+    #[test]
     fn startup_selection_requests_the_list() {
         let mut a = app();
-        a.set_awesome(Some(index()), Some(sel("o/awesome-x", "Node.js")));
+        a.set_awesome(Some(index()), Some(sel("o/awesome-x", "Node.js")), false);
         assert_eq!(
             a.drain_effects(),
             vec![Effect::OpenAwesomeList {
@@ -2639,7 +2660,7 @@ mod tests {
     #[test]
     fn picker_esc_clears_filter_then_closes() {
         let mut a = app();
-        a.set_awesome(Some(index()), None);
+        a.set_awesome(Some(index()), None, false);
         to_awesome(&mut a);
         a.handle_key(key(KeyCode::Enter));
         a.handle_key(ch('/'));
@@ -2823,7 +2844,7 @@ mod tests {
 
     fn open_picker() -> App {
         let mut a = app();
-        a.set_awesome(Some(index()), None);
+        a.set_awesome(Some(index()), None, false);
         to_awesome(&mut a);
         a.handle_key(key(KeyCode::Enter));
         assert!(matches!(a.overlay, Overlay::AwesomePicker { .. }));
@@ -2951,6 +2972,7 @@ mod tests {
         b.set_awesome(
             Some(index()),
             Some(sel("wbinnssmith/awesome-promises", "JavaScript › Promises")),
+            false,
         );
         to_awesome(&mut b);
         b.handle_key(key(KeyCode::Left));

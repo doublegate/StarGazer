@@ -244,6 +244,10 @@ struct Block {
     pending: Option<String>,
     /// Table cells (rows only): text per cell.
     cells: Vec<String>,
+    /// Position in the document, counted when the item or row *opens*:
+    /// items are reported when they close, so a nested item would
+    /// otherwise come before its parent.
+    order: usize,
 }
 
 impl Block {
@@ -287,6 +291,7 @@ fn walk(md: &str, mut on_block: impl FnMut(usize, &[String], Block) -> bool) {
     let mut row: Option<Block> = None; // open table row
     let mut in_table_head = false;
     let mut image_depth = 0usize;
+    let mut opened = 0usize; // items and rows opened so far
 
     for event in Parser::new_ext(md, opts) {
         match event {
@@ -299,7 +304,11 @@ fn walk(md: &str, mut on_block: impl FnMut(usize, &[String], Block) -> bool) {
             }
             Event::Start(Tag::Item) => {
                 // Text after a nested list belongs to the nested items.
-                stack.push(Block::default());
+                stack.push(Block {
+                    order: opened,
+                    ..Block::default()
+                });
+                opened += 1;
             }
             Event::End(TagEnd::Item) => {
                 if let Some(block) = stack.pop() {
@@ -311,7 +320,13 @@ fn walk(md: &str, mut on_block: impl FnMut(usize, &[String], Block) -> bool) {
             }
             Event::Start(Tag::TableHead) => in_table_head = true,
             Event::End(TagEnd::TableHead) => in_table_head = false,
-            Event::Start(Tag::TableRow) if !in_table_head => row = Some(Block::default()),
+            Event::Start(Tag::TableRow) if !in_table_head => {
+                row = Some(Block {
+                    order: opened,
+                    ..Block::default()
+                });
+                opened += 1;
+            }
             Event::End(TagEnd::TableRow) => {
                 if let Some(block) = row.take() {
                     let path = heading_path(&headings);
@@ -484,10 +499,17 @@ pub fn parse_list(md: &str) -> Vec<Entry> {
             name,
             desc,
             path: path.to_vec(),
-            rank: entries.len() as u32,
+            // Document position for now; renumbered below.
+            rank: block.order as u32,
         });
         entries.len() < MAX_ENTRIES
     });
+    // Items arrive when they close (a nested item before its parent), so
+    // restore README order and number the entries 0.. in it.
+    entries.sort_by_key(|e| e.rank);
+    for (i, e) in entries.iter_mut().enumerate() {
+        e.rank = i as u32;
+    }
     entries
 }
 
@@ -1035,6 +1057,12 @@ mod tests {
 
         let nested = by_name("child-tool");
         assert_eq!(nested.path, ["Libraries"]);
+        // PR #7 review (Codex): a nested item closes before its parent, so
+        // ranks must follow where entries *start* in the README.
+        assert!(
+            by_name("parent-lib").rank < nested.rank,
+            "parent before child"
+        );
 
         let onfido = by_name("Onfido");
         assert_eq!(onfido.url, "https://onfido.com");

@@ -88,7 +88,11 @@ async fn event_loop(
         SyncMode::Auto
     };
     let store = Store::beside(&ctx.cache_path);
-    app.set_awesome(store.load_index().map(|c| c.index), store.last_selection());
+    app.set_awesome(
+        store.load_index().map(|c| c.index),
+        store.last_selection(),
+        ctx.refresh,
+    );
     app.syncing = true;
     spawn_sync(ctx, mode, tx.clone(), Arc::clone(&lock));
 
