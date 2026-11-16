@@ -28,6 +28,15 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  agy-selftest:
+    # Offline self-test of the Antigravity reviewer (comment selection, budgets,
+    # lock wait); catches edits that break the template-managed workflow.
+    name: Antigravity reviewer self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash scripts/agy-review-selftest.sh
+
   clippy:
     name: clippy
     runs-on: ubuntu-latest

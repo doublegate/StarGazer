@@ -266,6 +266,10 @@ pub struct PickerRow {
     /// Matches the filter itself (false for headers and for parents shown
     /// only as context of a matching sub-list).
     pub matched: bool,
+    /// Keys of the rows above this one in the tree, outermost first (its
+    /// section, then its parent list). Names may contain `/`, so keys are
+    /// never split to find these.
+    pub ancestors: Vec<String>,
 }
 
 impl PickerRow {
@@ -346,6 +350,7 @@ pub fn picker_rows(
                 children: item.children.len(),
                 open,
                 matched: !filtering || parent_hit,
+                ancestors: vec![skey.clone()],
             });
             if !open {
                 continue;
@@ -363,6 +368,7 @@ pub fn picker_rows(
                     children: 0,
                     open: false,
                     matched: true,
+                    ancestors: vec![skey.clone(), ikey.clone()],
                 });
             }
             for c in kids {
@@ -377,6 +383,7 @@ pub fn picker_rows(
                     children: 0,
                     open: false,
                     matched: true,
+                    ancestors: vec![skey.clone(), ikey.clone()],
                 });
             }
         }
@@ -395,6 +402,7 @@ pub fn picker_rows(
             children: section.items.len(),
             open,
             matched: false,
+            ancestors: Vec::new(),
         });
         if open {
             out.extend(rows);
@@ -818,11 +826,11 @@ impl App {
             .and_then(|sel| {
                 index.sections.iter().position(|section| {
                     section.items.iter().any(|item| {
-                        item.repo.as_deref() == Some(sel.repo.as_str())
-                            || item
-                                .children
-                                .iter()
-                                .any(|c| c.repo.as_deref() == Some(sel.repo.as_str()))
+                        let is_sel = |r: &Option<String>| {
+                            r.as_deref()
+                                .is_some_and(|r| r.eq_ignore_ascii_case(&sel.repo))
+                        };
+                        is_sel(&item.repo) || item.children.iter().any(|c| is_sel(&c.repo))
                     })
                 })
             })
@@ -1003,10 +1011,7 @@ impl App {
             // Keep the cursor on the same row when it is still shown (e.g.
             // clearing the filter returns to the tree), else on the first
             // match.
-            let keep = self
-                .picker_view()
-                .get(self.picker_selected())
-                .map(|r| r.key.clone());
+            let keep = self.picker_view().get(self.picker_selected()).cloned();
             if let Overlay::AwesomePicker {
                 filter, filtering, ..
             } = &mut self.overlay
@@ -1023,10 +1028,17 @@ impl App {
                     *filtering = false;
                 }
             }
+            // Back in the tree, stay on that row, or else on its nearest
+            // visible ancestor (its section or parent list when collapsed).
             let rows = self.picker_view();
+            let in_tree = self.picker_filter().is_empty();
             let pos = keep
-                .and_then(|k| rows.iter().position(|r| r.key == k))
-                .filter(|_| self.picker_filter().is_empty())
+                .filter(|_| in_tree)
+                .and_then(|k| {
+                    std::iter::once(&k.key)
+                        .chain(k.ancestors.iter().rev())
+                        .find_map(|key| rows.iter().position(|r| &r.key == key))
+                })
                 .or_else(|| rows.iter().position(|r| r.selectable() && r.matched))
                 .unwrap_or(0);
             self.set_picker_selected(pos);
@@ -1468,6 +1480,13 @@ impl App {
                     KeyCode::Up | KeyCode::Char('k') => *selected = selected.saturating_sub(1),
                     KeyCode::Down | KeyCode::Char('j') => {
                         *selected = (*selected + 1).min(items.len().saturating_sub(1))
+                    }
+                    KeyCode::PageUp => {
+                        *selected = selected.saturating_sub(self.regions.popup_page.max(1))
+                    }
+                    KeyCode::PageDown => {
+                        *selected = (*selected + self.regions.popup_page.max(1))
+                            .min(items.len().saturating_sub(1))
                     }
                     KeyCode::Home | KeyCode::Char('g') => *selected = 0,
                     KeyCode::End | KeyCode::Char('G') => *selected = items.len().saturating_sub(1),
@@ -2971,6 +2990,54 @@ mod tests {
         b.handle_key(key(KeyCode::Enter));
         assert_eq!(view_names(&b), ["Platforms", "Programming Languages"]);
         assert_eq!(picker_cursor(&b), "Programming Languages");
+    }
+
+    #[test]
+    fn clearing_the_filter_lands_on_the_matchs_visible_ancestor() {
+        // agy review of PR #8: with the match's section collapsed, clearing
+        // the filter jumped to an unrelated row.
+        let mut a = open_picker();
+        a.handle_key(ch('/'));
+        for c in "screensav".chars() {
+            a.handle_key(ch(c));
+        }
+        assert_eq!(picker_cursor(&a), "Screensavers");
+        a.handle_key(key(KeyCode::Esc));
+        assert_eq!(view_names(&a), ["Platforms", "Programming Languages"]);
+        assert_eq!(picker_cursor(&a), "Platforms", "its collapsed section");
+    }
+
+    #[test]
+    fn picker_matches_the_chosen_list_case_insensitively() {
+        let mut a = app();
+        a.set_awesome(
+            Some(index()),
+            Some(sel("Rust-Unofficial/Awesome-Rust", "Rust")),
+            false,
+        );
+        to_awesome(&mut a);
+        a.handle_key(key(KeyCode::Left));
+        a.handle_key(key(KeyCode::Enter));
+        assert_eq!(picker_cursor(&a), "Programming Languages");
+    }
+
+    #[test]
+    fn language_picker_pages() {
+        let mut a = app();
+        a.regions.popup_page = 1;
+        a.handle_key(ch('l'));
+        let Overlay::Languages { ref items, .. } = a.overlay else {
+            panic!()
+        };
+        let last = items.len() - 1;
+        a.handle_key(key(KeyCode::PageDown));
+        assert!(matches!(a.overlay, Overlay::Languages { selected: 1, .. }));
+        for _ in 0..10 {
+            a.handle_key(key(KeyCode::PageDown));
+        }
+        assert!(matches!(a.overlay, Overlay::Languages { selected, .. } if selected == last));
+        a.handle_key(key(KeyCode::PageUp));
+        assert!(matches!(a.overlay, Overlay::Languages { selected, .. } if selected == last - 1));
     }
 
     #[test]

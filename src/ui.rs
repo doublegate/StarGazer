@@ -665,7 +665,7 @@ impl Ui {
         } = app.overlay
         {
             &[
-                ("Enter", "done"),
+                ("Enter", "open"),
                 ("Esc", "clear"),
                 ("Up/Down", "move"),
                 ("Ctrl-U", "erase"),
@@ -984,10 +984,21 @@ impl Ui {
         ];
         f.render_widget(Paragraph::new(lines).block(block), rect);
         // The button line is the third inner row: "y unstar" then "n cancel".
-        let y = rect.y + 3;
+        // Clipped to the pop-up's inner area: on a tiny terminal the pop-up
+        // shrinks and a button that does not fit gets no hit area at all.
+        let inner = Rect::new(
+            rect.x + 1,
+            rect.y + 1,
+            rect.width.saturating_sub(2),
+            rect.height.saturating_sub(2),
+        );
+        let button = |x: u16| {
+            let b = Rect::new(x, rect.y + 3, 8, 1).intersection(inner);
+            (b.width > 0 && b.height > 0).then_some(b)
+        };
         app.regions.popup_box = Some(rect);
-        app.regions.confirm_yes = Some(Rect::new(rect.x + 1, y, 8, 1));
-        app.regions.confirm_no = Some(Rect::new(rect.x + 1 + 11, y, 8, 1));
+        app.regions.confirm_yes = button(rect.x + 1);
+        app.regions.confirm_no = button(rect.x + 1 + 11);
     }
 }
 

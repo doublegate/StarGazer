@@ -505,3 +505,28 @@ fn awesome_picker_ascii_renders_only_ascii() {
         "closed section marker"
     );
 }
+
+#[test]
+fn unstar_buttons_stay_inside_a_shrunken_popup() {
+    // agy review of PR #8: on a tiny terminal the pop-up shrinks and the
+    // button hit areas must not land on its border or outside it.
+    let ui = Ui::new(Theme::preset(ThemeName::Dark), Glyphs::UNICODE);
+    for (w, h) in [(120, 30), (24, 8), (14, 7)] {
+        let mut app = App::new("octocat", fixture(), SortMode::Stars, true);
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        draw(&mut term, &ui, &mut app);
+        let b = app.regions.popup_box.unwrap();
+        let inner = Rect::new(b.x + 1, b.y + 1, b.width - 2, b.height - 2);
+        for btn in [app.regions.confirm_yes, app.regions.confirm_no]
+            .into_iter()
+            .flatten()
+        {
+            assert_eq!(
+                btn.intersection(inner),
+                btn,
+                "{w}x{h}: {btn:?} outside {inner:?}"
+            );
+        }
+    }
+}

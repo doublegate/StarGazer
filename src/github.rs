@@ -771,6 +771,8 @@ pub fn parse_repos_meta(
         #[serde(default, rename = "type")]
         kind: Option<String>,
         message: String,
+        #[serde(default)]
+        path: Vec<serde_json::Value>,
     }
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -824,6 +826,7 @@ pub fn parse_repos_meta(
     // caches that and does not ask again until a full refresh). Any other
     // error on an alias, or a node that does not parse, fails the batch so
     // the lookup is retried instead (PR #7 review).
+    let mut missing_aliases = std::collections::HashSet::new();
     for e in &resp.errors {
         let missing = matches!(e.kind.as_deref(), Some("NOT_FOUND" | "FORBIDDEN"));
         if !missing {
@@ -833,13 +836,27 @@ pub fn parse_repos_meta(
                 message,
             });
         }
+        if let Some(alias) = e.path.first().and_then(|p| p.as_str()) {
+            missing_aliases.insert(alias.to_string());
+        }
     }
     repos
         .iter()
         .enumerate()
         .map(|(k, (slot, _))| {
-            let node = match data.get(&format!("r{k}")) {
-                None | Some(serde_json::Value::Null) => return Ok((*slot, None)),
+            let alias = format!("r{k}");
+            let node = match data.get(&alias) {
+                // Missing only on GitHub's word for this very alias; a null
+                // or absent alias without one is an incomplete response
+                // (agy review of PR #8).
+                Some(serde_json::Value::Null) if missing_aliases.contains(&alias) => {
+                    return Ok((*slot, None));
+                }
+                None | Some(serde_json::Value::Null) => {
+                    return Err(GitHubError::Parse(format!(
+                        "repository {alias}: no data and no not-found error"
+                    )));
+                }
                 Some(v) => serde_json::from_value::<Node>(v.clone())
                     .map_err(|e| GitHubError::Parse(format!("repository r{k}: {e}")))?,
             };
@@ -1229,6 +1246,16 @@ mod tests {
             r#"{{"data":{{"r0":{node},"r1":null}},"errors":[{{"message":"Something went wrong"}}]}}"#
         );
         assert!(parse_repos_meta(&untyped, &repos).is_err());
+
+        // agy review of PR #8: a null or absent alias without GitHub's own
+        // not-found error is an incomplete response, not a missing repo.
+        let unexplained = format!(r#"{{"data":{{"r0":{node},"r1":null}}}}"#);
+        assert!(matches!(
+            parse_repos_meta(&unexplained, &repos),
+            Err(GitHubError::Parse(_))
+        ));
+        let absent = format!(r#"{{"data":{{"r0":{node}}}}}"#);
+        assert!(parse_repos_meta(&absent, &repos).is_err());
 
         let malformed = r#"{"data":{"r0":{"nameWithOwner":7},"r1":null}}"#;
         assert!(matches!(

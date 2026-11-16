@@ -66,7 +66,9 @@ pub fn needs_full(cache: &StarCache, user: &str, mode: SyncMode, stale_days: u32
 /// cache holds; exporting the cache then would silently write another
 /// account's stars (PR #2 review).
 pub fn export_needs_sync(requested: Option<&str>, cache: &StarCache, sync_flag: bool) -> bool {
-    sync_flag || cache.repos.is_empty() || requested.is_some_and(|u| !same_user(u, &cache.username))
+    sync_flag
+        || cache.repos.is_empty()
+        || requested.is_some_and(|u| !same_user(u.trim(), &cache.username))
 }
 
 /// Whether an export for `user` must sync into a scratch cache instead of
@@ -229,6 +231,10 @@ mod tests {
         assert!(
             !export_needs_sync(Some("ALICE"), &c, false),
             "case-insensitive"
+        );
+        assert!(
+            !export_needs_sync(Some(" alice\n"), &c, false),
+            "trimmed like connect()"
         );
         assert!(export_needs_sync(Some("bob"), &c, false), "another account");
         assert!(export_needs_sync(None, &c, true), "--sync");
