@@ -160,7 +160,11 @@ async fn run() -> Result<()> {
                 };
                 // For an empty cache: the account a plain launch would open
                 // (configured user, else the token's owner).
-                let default_user = if cache.username.is_empty() {
+                // For an empty cache: the account a plain launch would open.
+                // Only an explicit --user / STARGAZER_USER can differ from
+                // it (otherwise `user` already is that account), so only
+                // then is it looked up.
+                let default_user = if cache.username.is_empty() && cli.user.is_some() {
                     match config.user.clone() {
                         Some(u) => Some(u),
                         None => client.viewer_login().await.ok(),
@@ -181,10 +185,7 @@ async fn run() -> Result<()> {
                         .join(format!("stargazer-export-{}-{nanos}", std::process::id()));
                     std::fs::create_dir(&dir)
                         .with_context(|| format!("creating {}", dir.display()))?;
-                    eprintln!(
-                        "exporting {user}'s stars; your cache ({}) is not changed",
-                        cache.username
-                    );
+                    eprintln!("exporting {user}'s stars; your own cache is not changed");
                     let result = sync(
                         &client,
                         &user,

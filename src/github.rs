@@ -697,12 +697,26 @@ async fn read_capped(mut resp: Response, max: usize) -> Result<String, GitHubErr
 /// `bytes` as text, dropping a truncated character at the end; any invalid
 /// bytes elsewhere become U+FFFD as before.
 pub fn utf8_prefix(bytes: &[u8]) -> String {
-    let end = match std::str::from_utf8(bytes) {
-        Ok(_) => bytes.len(),
-        // An incomplete sequence at the very end is the cap's doing.
-        Err(e) if e.error_len().is_none() => e.valid_up_to(),
-        Err(_) => bytes.len(),
-    };
+    // Only the tail matters (an invalid byte earlier must not stop this):
+    // walk back over continuation bytes to the last lead byte and drop that
+    // character if it needs more bytes than are left.
+    let mut end = bytes.len();
+    for back in 1..=bytes.len().min(4) {
+        let b = bytes[bytes.len() - back];
+        if b & 0xC0 == 0x80 {
+            continue; // continuation byte
+        }
+        let need = match b {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF7 => 4,
+            _ => 1,
+        };
+        if need > back {
+            end = bytes.len() - back;
+        }
+        break;
+    }
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
@@ -1214,6 +1228,10 @@ mod tests {
             "a\u{FFFD}b",
             "invalid bytes inside are kept as before"
         );
+        // An earlier invalid byte must not stop the trailing cut (agy review).
+        let mut mixed = b"x\xffy".to_vec();
+        mixed.extend_from_slice(&"€".as_bytes()[..2]);
+        assert_eq!(utf8_prefix(&mixed), "x\u{FFFD}y");
     }
 
     #[test]

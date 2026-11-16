@@ -662,8 +662,12 @@ impl Store {
             .filter(|c| c.repo == repo && c.version == STORE_VERSION)
     }
 
+    /// The last chosen list, ignored when its repository name is not valid
+    /// (a damaged state.json must not queue a fetch that can only fail).
     pub fn last_selection(&self) -> Option<Selection> {
-        Self::load::<State>(&self.state_path())?.last
+        Self::load::<State>(&self.state_path())?
+            .last
+            .filter(|s| validate_full_name(&s.repo).is_ok())
     }
 
     pub fn save_selection(&self, sel: &Selection) -> anyhow::Result<()> {

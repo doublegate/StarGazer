@@ -370,6 +370,12 @@ fn selection_round_trips_and_freshness() {
     };
     store.save_selection(&sel).unwrap();
     assert_eq!(store.last_selection(), Some(sel));
+    let bad = awesome::Selection {
+        repo: "../../etc".into(),
+        label: "x".into(),
+    };
+    store.save_selection(&bad).unwrap();
+    assert_eq!(store.last_selection(), None, "invalid repo name ignored");
 
     let now = Some(chrono::Utc::now());
     let old = Some(chrono::Utc::now() - chrono::Duration::days(10));

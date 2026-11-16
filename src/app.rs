@@ -834,6 +834,7 @@ impl App {
         // Every opening starts with all sections collapsed. The cursor
         // starts on the section holding the chosen list, if any.
         self.awesome.expanded.clear();
+        self.awesome.anchor = None;
         let selected = self
             .awesome
             .selection
@@ -1003,7 +1004,12 @@ impl App {
             }
             KeyCode::Enter => {
                 let i = self.picker_selected();
-                if filtering && self.picker_view().get(i).is_none_or(|r| r.expander()) {
+                // While typing a filter, Enter on a header just ends typing;
+                // with the filter erased it acts as usual (expands).
+                if filtering
+                    && !self.picker_filter().is_empty()
+                    && self.picker_view().get(i).is_none_or(|r| r.expander())
+                {
                     // Ends typing; the filtered tree stays.
                     if let Overlay::AwesomePicker { filtering, .. } = &mut self.overlay {
                         *filtering = false;
@@ -3042,6 +3048,19 @@ mod tests {
         assert!(a.picker_view().is_empty());
         a.handle_key(key(KeyCode::Esc));
         assert_eq!(picker_cursor(&a), "Platforms", "the last match's section");
+    }
+
+    #[test]
+    fn enter_with_an_erased_filter_expands() {
+        let mut a = open_picker();
+        a.handle_key(ch('/'));
+        a.handle_key(ch('x'));
+        a.handle_key(key(KeyCode::Backspace)); // filter empty, still typing
+        a.handle_key(key(KeyCode::Enter));
+        assert!(
+            view_names(&a).contains(&"  Node.js".to_string()),
+            "Platforms expanded"
+        );
     }
 
     #[test]
