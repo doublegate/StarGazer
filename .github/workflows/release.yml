@@ -39,10 +39,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
-      - uses: dtolnay/rust-toolchain@stable
+      # Third-party actions are pinned to full commit SHAs: they run while the
+      # binaries users download are being built.
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch, 2026-11
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
 
@@ -105,7 +108,7 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Combined checksum file
-        run: cd dist && cat *.sha256 > SHA256SUMS
+        run: cd dist && cat ./*.sha256 > SHA256SUMS
       - name: Extract release notes from CHANGELOG
         run: |
           version="${TAG#v}"
@@ -115,14 +118,23 @@ jobs:
             found { print }
           ' CHANGELOG.md > notes.md
           test -s notes.md || echo "Release $TAG" > notes.md
-      - uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ env.TAG }}
-          name: StarGazer ${{ env.TAG }}
-          body_path: notes.md
-          files: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/SHA256SUMS
-          fail_on_unmatched_files: true
-          overwrite_files: true
+      # Published with GitHub's own CLI so no third-party code runs with the
+      # contents:write token.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          shopt -s nullglob
+          assets=(dist/*.tar.gz dist/*.zip dist/SHA256SUMS)
+          if [ "${#assets[@]}" -lt 6 ]; then
+            echo "expected 5 archives + SHA256SUMS, found: ${assets[*]}" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+            gh release edit "$TAG" --title "StarGazer $TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" "${assets[@]}" --verify-tag \
+              --title "StarGazer $TAG" --notes-file notes.md
+          fi
