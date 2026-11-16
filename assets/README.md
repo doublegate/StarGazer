@@ -24,15 +24,15 @@ Noto Sans Mono Bold (tagline).
 
 ```bash
 cd assets
-for s in 16 32 48; do rsvg-convert -w $s -h $s logo-small.svg -o icons/icon-$s.png; done
-for s in 64 128 180 256 512 1024; do rsvg-convert -w $s -h $s logo.svg -o icons/icon-$s.png; done
+for s in 16 32 48; do rsvg-convert -w "$s" -h "$s" logo-small.svg -o "icons/icon-$s.png"; done
+for s in 64 128 180 256 512 1024; do rsvg-convert -w "$s" -h "$s" logo.svg -o "icons/icon-$s.png"; done
 magick icons/icon-16.png icons/icon-32.png icons/icon-48.png icons/favicon.ico
 optipng -quiet -o2 icons/*.png
 
 # Windows application icon (embedded by build.rs)
 mkdir -p /tmp/ico
-for s in 16 24 32 48; do rsvg-convert -w $s -h $s logo-small.svg -o /tmp/ico/$s.png; done
-for s in 64 128 256; do rsvg-convert -w $s -h $s logo.svg -o /tmp/ico/$s.png; done
+for s in 16 24 32 48; do rsvg-convert -w "$s" -h "$s" logo-small.svg -o "/tmp/ico/$s.png"; done
+for s in 64 128 256; do rsvg-convert -w "$s" -h "$s" logo.svg -o "/tmp/ico/$s.png"; done
 optipng -quiet -o2 /tmp/ico/*.png
 ./pack_ico.py icons/stargazer.ico /tmp/ico/{16,24,32,48,64,128,256}.png
 ```

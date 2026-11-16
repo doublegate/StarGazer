@@ -95,23 +95,26 @@ and put `stargazer` on your `PATH`:
 ```bash
 # Linux
 sha256sum -c --ignore-missing SHA256SUMS
-tar -xzf stargazer-v0.2.1-x86_64-unknown-linux-gnu.tar.gz
-install -m 755 stargazer-v0.2.1-x86_64-unknown-linux-gnu/stargazer ~/.local/bin/
+tar -xzf stargazer-v0.3.1-x86_64-unknown-linux-gnu.tar.gz
+install -m 755 stargazer-v0.3.1-x86_64-unknown-linux-gnu/stargazer ~/.local/bin/
 
 # macOS
 grep aarch64-apple-darwin SHA256SUMS | shasum -a 256 -c
-tar -xzf stargazer-v0.2.1-aarch64-apple-darwin.tar.gz
+tar -xzf stargazer-v0.3.1-aarch64-apple-darwin.tar.gz
 ```
 
-On Windows, compare `Get-FileHash stargazer-v0.2.1-x86_64-pc-windows-msvc.zip` with the line in
+On Windows, compare `Get-FileHash stargazer-v0.3.1-x86_64-pc-windows-msvc.zip` with the line in
 `SHA256SUMS`, then extract the zip.
 
 > **macOS:** the binaries are not yet signed or notarized
 > ([#3](https://github.com/doublegate/StarGazer/issues/3)), so Gatekeeper blocks a
 > browser-downloaded copy with "cannot be verified". After checking the checksum, clear the
-> quarantine flag with `xattr -d com.apple.quarantine stargazer`, or build from source
-> (below). On Windows, SmartScreen may warn on first run; choose "More info", then
-> "Run anyway".
+> quarantine flag on the binary where it is, for example
+> `xattr -d com.apple.quarantine ~/.local/bin/stargazer` (`xattr` needs the file's path, it
+> does not search `PATH`), or build from source (below).
+>
+> **Windows:** SmartScreen may warn on first run; choose "More info", then "Run anyway", or
+> clear the download mark first with `Unblock-File .\stargazer.exe` in PowerShell.
 
 ### Build from source
 
@@ -119,7 +122,7 @@ Requires Rust 1.88 or newer ([rustup.rs](https://rustup.rs)). Either let Cargo b
 install it into `~/.cargo/bin`:
 
 ```bash
-cargo install --locked --git https://github.com/doublegate/StarGazer --tag v0.2.1
+cargo install --locked --git https://github.com/doublegate/StarGazer --tag v0.3.1
 ```
 
 or build a checkout and copy the binary wherever you keep tools:

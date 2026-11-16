@@ -43,6 +43,22 @@ All notable changes to this project are documented here. The format follows
 - A cache without a recorded full sync (one carried over from v0.1) could postpone the periodic
   full sync forever, because each incremental sync moved the date it was measured from. It now
   gets one full sync, which sets the date.
+- Search: a typo or abbreviation in a repo name no longer outranks a real word in its
+  description; `C++` and `C#` are searchable as such; one letter already narrows the list to
+  words starting with it; repeated words count once; a search of only punctuation no longer
+  claims "by relevance".
+- README previews: a linked badge (`[![CI](...)](...)`) no longer shows as `![CI](...)`.
+- A repository URL from the cache or API is sanitized before it is shown or copied, and only
+  plain `https://github.com/` URLs are opened for starred repos.
+- README downloads stop at the size cap instead of being read whole, and never end in a broken
+  character.
+- A REST ETag is no longer kept across GraphQL syncs, where it could later make an anonymous run
+  accept a stale "not modified".
+- The cached awesome index is sanitized and version-checked when loaded; a list skipped in the
+  index no longer hands its sub-lists to the next one.
+- Release notes: the CHANGELOG section is matched literally (the version's dots were regex
+  wildcards).
+- README: the macOS quarantine command takes the binary's path; Windows has its own note.
 - `stargazer export` exported the cached account's stars even when `--user`,
   `STARGAZER_USER` or the config asked for another account. It now downloads that account's
   stars into a temporary cache for the export, leaving your own cache (and what a plain
