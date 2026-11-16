@@ -16,8 +16,8 @@ All notable changes to this project are documented here. The format follows
 - **The Awesome list picker is a collapsible tree.** It opens with only the sections; `Enter`,
   `→` or a click expands a section into its lists and a list into its sub-lists, with the list
   itself first (`Python (all)`). `←` collapses or moves to the parent. Filtering with `/` shows
-  every match with its path, and clearing it returns to the tree as you left it. The picker
-  remembers what was open and reopens on the chosen list.
+  every match with its path, and clearing it returns to the tree as you left it. It always opens
+  with every section collapsed, the cursor on the section that holds the chosen list.
 - **The pop-ups look like the rest of the app:** expander markers, counts, the same selection
   and scrollbar as the panes, the filter in the status line like the main search, and the
   pop-up's keys in the hint bar.

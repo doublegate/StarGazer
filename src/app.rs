@@ -216,8 +216,8 @@ pub struct AwesomeView {
     pub progress: Option<String>,
     /// Last fetch of the chosen list failed (rows may be from the cache).
     pub error: Option<String>,
-    /// Open rows of the picker tree (`PickerRow::key`), kept between
-    /// openings so the picker reopens as it was left.
+    /// Open rows of the picker tree (`PickerRow::key`) while it is open;
+    /// cleared each time the picker opens (all sections start collapsed).
     pub expanded: HashSet<String>,
 }
 
@@ -808,33 +808,25 @@ impl App {
             self.set_status(Level::Warn, msg);
             return;
         };
-        // Reveal the chosen list (open its section and parent) and start
-        // the cursor on it; otherwise on the first row.
-        let mut selected = 0;
-        if let Some(sel) = &self.awesome.selection {
-            for section in &index.sections {
-                for item in &section.items {
-                    let own = item.repo.as_deref() == Some(sel.repo.as_str());
-                    let child = item
-                        .children
-                        .iter()
-                        .any(|c| c.repo.as_deref() == Some(sel.repo.as_str()));
-                    if own || child {
-                        self.awesome.expanded.insert(format!("s/{}", section.name));
-                        if !item.children.is_empty() {
-                            self.awesome
-                                .expanded
-                                .insert(format!("l/{}/{}", section.name, item.name));
-                        }
-                    }
-                }
-            }
-            let rows = picker_rows(index, "", &self.awesome.expanded);
-            selected = rows
-                .iter()
-                .position(|r| r.selectable() && r.repo.as_deref() == Some(sel.repo.as_str()))
-                .unwrap_or(0);
-        }
+        // Every opening starts with all sections collapsed. The cursor
+        // starts on the section holding the chosen list, if any.
+        self.awesome.expanded.clear();
+        let selected = self
+            .awesome
+            .selection
+            .as_ref()
+            .and_then(|sel| {
+                index.sections.iter().position(|section| {
+                    section.items.iter().any(|item| {
+                        item.repo.as_deref() == Some(sel.repo.as_str())
+                            || item
+                                .children
+                                .iter()
+                                .any(|c| c.repo.as_deref() == Some(sel.repo.as_str()))
+                    })
+                })
+            })
+            .unwrap_or(0);
         self.popup_list = ListState::default();
         self.overlay = Overlay::AwesomePicker {
             filter: String::new(),
@@ -2957,17 +2949,17 @@ mod tests {
     }
 
     #[test]
-    fn picker_reopens_as_left_and_reveals_the_chosen_list() {
+    fn picker_always_opens_with_every_section_collapsed() {
         let mut a = open_picker();
         a.handle_key(key(KeyCode::Enter)); // open Platforms
+        a.handle_key(ch('j'));
+        a.handle_key(key(KeyCode::Enter)); // open Node.js
         a.handle_key(key(KeyCode::Esc)); // close
         a.handle_key(key(KeyCode::Enter)); // reopen (sidebar still on Awesome)
-        assert!(
-            view_names(&a).contains(&"  Node.js".to_string()),
-            "still expanded"
-        );
+        assert_eq!(view_names(&a), ["Platforms", "Programming Languages"]);
 
-        // With a sub-list chosen, reopening reveals and selects it.
+        // With a sub-list chosen, it stays collapsed and the cursor starts on
+        // the section that holds it.
         let mut b = app();
         b.set_awesome(
             Some(index()),
@@ -2977,7 +2969,8 @@ mod tests {
         to_awesome(&mut b);
         b.handle_key(key(KeyCode::Left));
         b.handle_key(key(KeyCode::Enter));
-        assert_eq!(picker_cursor(&b), "Promises");
+        assert_eq!(view_names(&b), ["Platforms", "Programming Languages"]);
+        assert_eq!(picker_cursor(&b), "Programming Languages");
     }
 
     #[test]

@@ -196,7 +196,8 @@ click expands one to show its lists, and a list with sub-lists expands the same 
 the first row opens the list itself (`Python (all)`), followed by its sub-lists (Asyncio,
 Typing, ...). `←` collapses, or moves to the parent row. Press `/` to filter by name or
 description (every match is shown with its path; `Esc` clears the filter and returns to the
-tree as you left it). The picker remembers what was expanded and reopens on the chosen list.
+tree as you left it). The picker always opens with every section collapsed, the cursor on the
+section that holds the chosen list.
 
 The chosen list appears under Awesome as `→ Node.js › Cross-Platform` (only while Awesome is
 selected), and its entries fill the repo pane. They work like your stars: search, the language,
