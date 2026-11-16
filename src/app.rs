@@ -8,13 +8,12 @@
 
 use crate::cache::{StarCache, StarredRepo};
 use crate::categories::category_counts;
+use crate::search::{Doc, Query};
 use crate::text::sanitize;
 use chrono::{DateTime, Utc};
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
-use nucleo_matcher::{Matcher, Utf32Str};
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::ListState;
 use serde::Deserialize;
@@ -70,22 +69,26 @@ impl SortMode {
 
 /// Sort `repos` in place by `mode`; ties broken by name for stable output.
 pub fn sort_repos(repos: &mut [StarredRepo], mode: SortMode) {
-    let name = |r: &StarredRepo| r.full_name.to_lowercase();
+    repos.sort_by(|a, b| compare_repos(a, b, mode));
+}
+
+/// Ordering for `mode`; ties broken by lowercase name for stable output.
+pub fn compare_repos(a: &StarredRepo, b: &StarredRepo, mode: SortMode) -> std::cmp::Ordering {
+    let by_name = || a.full_name.to_lowercase().cmp(&b.full_name.to_lowercase());
     match mode {
-        SortMode::Stars => repos.sort_by(|a, b| {
-            b.stargazers_count
-                .cmp(&a.stargazers_count)
-                .then_with(|| name(a).cmp(&name(b)))
-        }),
-        SortMode::RecentlyActive => repos.sort_by(|a, b| {
+        SortMode::Stars => b
+            .stargazers_count
+            .cmp(&a.stargazers_count)
+            .then_with(by_name),
+        SortMode::RecentlyActive => {
             let t = |r: &StarredRepo| r.pushed_at.unwrap_or(r.updated_at);
-            t(b).cmp(&t(a)).then_with(|| name(a).cmp(&name(b)))
-        }),
-        SortMode::Name => repos.sort_by_cached_key(name),
-        SortMode::StarredAt => repos.sort_by(|a, b| {
+            t(b).cmp(&t(a)).then_with(by_name)
+        }
+        SortMode::Name => by_name(),
+        SortMode::StarredAt => {
             let t = |r: &StarredRepo| r.starred_at.unwrap_or(r.updated_at);
-            t(b).cmp(&t(a)).then_with(|| name(a).cmp(&name(b)))
-        }),
+            t(b).cmp(&t(a)).then_with(by_name)
+        }
     }
 }
 
@@ -208,7 +211,8 @@ pub struct App {
     pub ascii: bool,
 
     pub repos: Vec<StarredRepo>,
-    haystacks: Vec<String>,
+    /// Search index, parallel to `repos`.
+    docs: Vec<Doc>,
     /// `(name, count)` for the sidebar; index 0 is "All".
     pub categories: Vec<(String, usize)>,
     pub cat_sel: usize,
@@ -243,7 +247,6 @@ pub struct App {
     pub regions: Regions,
     pub effects: Vec<Effect>,
     pub should_quit: bool,
-    matcher: Matcher,
 }
 
 impl App {
@@ -253,7 +256,7 @@ impl App {
             can_write,
             ascii: false,
             repos: Vec::new(),
-            haystacks: Vec::new(),
+            docs: Vec::new(),
             categories: Vec::new(),
             cat_sel: 0,
             cat_list: ListState::default(),
@@ -281,7 +284,6 @@ impl App {
             regions: Regions::default(),
             effects: Vec::new(),
             should_quit: false,
-            matcher: Matcher::new(nucleo_matcher::Config::DEFAULT),
         };
         app.ingest(cache);
         app
@@ -300,7 +302,7 @@ impl App {
             .map(StarredRepo::sanitized)
             .collect();
         sort_repos(&mut repos, self.sort);
-        self.haystacks = repos.iter().map(haystack).collect();
+        self.docs = repos.iter().map(Doc::new).collect();
         self.repos = repos;
         self.last_synced = cache.fetched_at;
 
@@ -380,22 +382,20 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
-        if self.search.trim().is_empty() {
+        let query = Query::parse(&self.search);
+        if query.is_empty() {
             self.visible = candidates;
         } else {
-            // As in v0.1: case-insensitive fuzzy *filter* that keeps the current
-            // sort order (the title's sort label stays truthful while searching).
-            let pattern = Pattern::parse(&self.search, CaseMatching::Ignore, Normalization::Smart);
-            let mut buf = Vec::new();
-            let (haystacks, matcher) = (&self.haystacks, &mut self.matcher);
-            self.visible = candidates
+            // Word-based relevance (see `search`): title matches first, then
+            // topics/language, then description words, weak fuzzy matches
+            // last; equal scores keep the current sort order. Replaced the
+            // v0.1/v0.2.0 whole-text fuzzy filter, which matched most repos.
+            let mut scored: Vec<(u32, usize)> = candidates
                 .into_iter()
-                .filter(|&i| {
-                    pattern
-                        .score(Utf32Str::new(&haystacks[i], &mut buf), matcher)
-                        .is_some()
-                })
+                .filter_map(|i| query.score(&self.docs[i]).map(|s| (s, i)))
                 .collect();
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            self.visible = scored.into_iter().map(|(_, i)| i).collect();
         }
         self.repo_sel = self.repo_sel.min(self.visible.len().saturating_sub(1));
         self.selection_moved();
@@ -582,18 +582,12 @@ impl App {
     pub fn set_sort(&mut self, sort: SortMode) {
         let keep = self.selected_repo().map(|r| r.id);
         self.sort = sort;
-        let mut paired: Vec<(StarredRepo, String)> = std::mem::take(&mut self.repos)
+        let mut paired: Vec<(StarredRepo, Doc)> = std::mem::take(&mut self.repos)
             .into_iter()
-            .zip(std::mem::take(&mut self.haystacks))
+            .zip(std::mem::take(&mut self.docs))
             .collect();
-        let mut repos: Vec<StarredRepo> = paired.iter().map(|(r, _)| r.clone()).collect();
-        sort_repos(&mut repos, sort);
-        let mut by_id: HashMap<u64, String> = paired.drain(..).map(|(r, h)| (r.id, h)).collect();
-        self.haystacks = repos
-            .iter()
-            .map(|r| by_id.remove(&r.id).unwrap_or_else(|| haystack(r)))
-            .collect();
-        self.repos = repos;
+        paired.sort_by(|a, b| compare_repos(&a.0, &b.0, sort));
+        (self.repos, self.docs) = paired.into_iter().unzip();
         self.rebuild_visible();
         if let Some(id) = keep {
             self.select_repo_id(id);
@@ -969,7 +963,7 @@ impl App {
                     let keep_cat = self.selected_category().to_string();
                     if let Some(pos) = self.repos.iter().position(|r| r.id == id) {
                         self.repos.remove(pos);
-                        self.haystacks.remove(pos);
+                        self.docs.remove(pos);
                     }
                     self.rebuild_categories(&keep_cat);
                     self.rebuild_visible();
@@ -1016,17 +1010,6 @@ fn inner_row(area: Rect, pos: Position) -> Option<usize> {
         area.height.saturating_sub(2),
     );
     inner.contains(pos).then(|| (pos.y - inner.y) as usize)
-}
-
-/// Search text for a repo.
-fn haystack(r: &StarredRepo) -> String {
-    format!(
-        "{} {} {} {}",
-        r.full_name,
-        r.description.as_deref().unwrap_or(""),
-        r.topics.join(" "),
-        r.language.as_deref().unwrap_or("")
-    )
 }
 
 #[cfg(test)]
@@ -1344,14 +1327,34 @@ mod tests {
     }
 
     #[test]
-    fn search_keeps_sort_order_and_ignores_case() {
-        let mut a = app();
+    fn search_ranks_by_relevance_then_sort_order() {
+        // v0.2.1: relevance ranking replaced the v0.1 "filter, keep sort
+        // order" fuzzy search, which matched most repos.
+        let mk = |id, name: &str, stars, desc: &str| StarredRepo {
+            id,
+            full_name: format!("o/{name}"),
+            name: name.into(),
+            stargazers_count: stars,
+            description: Some(desc.into()),
+            ..StarredRepo::test_default()
+        };
+        let cache = StarCache {
+            repos: vec![
+                mk(1, "big-lib", 900, "plugins for gamma rays"), // description match
+                mk(2, "gamma", 5, "a small tool"),               // title match
+                mk(3, "other", 800, "unrelated"),                // no match
+                mk(4, "mid-lib", 500, "gamma helpers"),          // description match
+            ],
+            ..Default::default()
+        };
+        let mut a = App::new("me", cache, SortMode::Stars, false);
         a.handle_key(ch('/'));
-        // "A" (capital) must still match lowercase names, as in v0.1.
-        a.handle_key(ch('A'));
-        // Every name contains an 'a'; results must stay in star order
-        // (beta 50, gamma 30, alpha 10, delta 5), not match-score order.
-        assert_eq!(names(&a), ["beta", "gamma", "alpha", "delta"]);
+        for c in "GAMMA".chars() {
+            a.handle_key(ch(c)); // case-insensitive
+        }
+        // Title match first despite fewest stars; equal-relevance description
+        // matches keep star order; the unrelated repo is not listed.
+        assert_eq!(names(&a), ["gamma", "big-lib", "mid-lib"]);
     }
 
     #[test]
