@@ -23,7 +23,8 @@ searchable, and one keypress from your browser.
   whole-word description keywords
 - **Your own repos**: starred repos you own get their own sidebar group (and stay in their
   category too)
-- **Fuzzy search**: `/` searches name, description, topics and language
+- **Relevance search**: `/` matches whole words (with prefixes and typo tolerance) in the
+  repo name, owner, topics, language and description, best matches first
 - **Filters**: by language (`l`), hide archived (`a`) or forks (`f`)
 - **Details pane**: `d` shows metadata and a rendered README preview
 - **Sort modes**: by stars, recently active, name, or when you starred it
@@ -86,15 +87,15 @@ and put `stargazer` on your `PATH`:
 ```bash
 # Linux
 sha256sum -c --ignore-missing SHA256SUMS
-tar -xzf stargazer-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
-install -m 755 stargazer-v0.2.0-x86_64-unknown-linux-gnu/stargazer ~/.local/bin/
+tar -xzf stargazer-v0.2.1-x86_64-unknown-linux-gnu.tar.gz
+install -m 755 stargazer-v0.2.1-x86_64-unknown-linux-gnu/stargazer ~/.local/bin/
 
 # macOS
 grep aarch64-apple-darwin SHA256SUMS | shasum -a 256 -c
-tar -xzf stargazer-v0.2.0-aarch64-apple-darwin.tar.gz
+tar -xzf stargazer-v0.2.1-aarch64-apple-darwin.tar.gz
 ```
 
-On Windows, compare `Get-FileHash stargazer-v0.2.0-x86_64-pc-windows-msvc.zip` with the line in
+On Windows, compare `Get-FileHash stargazer-v0.2.1-x86_64-pc-windows-msvc.zip` with the line in
 `SHA256SUMS`, then extract the zip.
 
 > **macOS:** the binaries are not yet signed or notarized
@@ -110,7 +111,7 @@ Requires Rust 1.88 or newer ([rustup.rs](https://rustup.rs)). Either let Cargo b
 install it into `~/.cargo/bin`:
 
 ```bash
-cargo install --locked --git https://github.com/doublegate/StarGazer --tag v0.2.0
+cargo install --locked --git https://github.com/doublegate/StarGazer --tag v0.2.1
 ```
 
 or build a checkout and copy the binary wherever you keep tools:
@@ -212,7 +213,20 @@ Cycle with `s`:
 3. **Name A→Z**: alphabetical by `owner/repo`
 4. **Starred ↓**: by when you starred it, newest first
 
-Search filters the current sort order rather than re-ranking it.
+## Search
+
+Press `/` and type. Each word you type is matched against the individual words of every
+repo, and every word must match somewhere. Results are ranked by relevance (the pane title
+shows "by relevance"); with an empty search the list is in the sort order above.
+
+- **Where it matched**, strongest first: repo name, owner, topics and language, description.
+- **How well it matched**, strongest first: the exact word, the start of a word
+  (`rata` finds "ratatui"), inside a longer word (4+ letters), a typo (one edit for 5+
+  letters, two for 8+: `emulater` finds "emulator"), and letters in order within one word
+  (`rtui` finds "ratatui").
+- Repos whose name matches come first, then those matching topics or the description, and
+  weak typo or abbreviation matches last. Equally relevant repos keep the current sort
+  order, and a multi-word query that appears as a phrase (`command line`) ranks higher.
 
 ## Configuration
 
@@ -260,7 +274,6 @@ or `GH_TOKEN` environment variables.
 | [ratatui](https://github.com/ratatui/ratatui) / [crossterm](https://github.com/crossterm-rs/crossterm) | TUI framework and terminal backend |
 | [tokio](https://tokio.rs) / [futures](https://github.com/rust-lang/futures-rs) | Async runtime and event stream |
 | [reqwest](https://github.com/seanmonstar/reqwest) | GitHub API HTTP client (rustls) |
-| [nucleo-matcher](https://github.com/helix-editor/nucleo) | Fuzzy search |
 | [unicode-width](https://github.com/unicode-rs/unicode-width) / [unicode-segmentation](https://github.com/unicode-rs/unicode-segmentation) | Display-width-correct text |
 | [clap](https://github.com/clap-rs/clap) | Command line |
 | [serde](https://serde.rs) / [serde_json](https://github.com/serde-rs/json) / [toml](https://github.com/toml-rs/toml) / [csv](https://github.com/BurntSushi/rust-csv) | Serialization, config, export |
@@ -268,6 +281,7 @@ or `GH_TOKEN` environment variables.
 | [directories](https://github.com/dirs-dev/directories-rs) | XDG / platform directories |
 | [chrono](https://github.com/chronotope/chrono) | Date/time handling |
 | [anyhow](https://github.com/dtolnay/anyhow) / [thiserror](https://github.com/dtolnay/thiserror) | Error handling |
+| [winresource](https://github.com/BenjaminRi/winresource) (Windows builds only) | Embeds the icon and version info in `stargazer.exe` |
 
 ## Contributing
 
