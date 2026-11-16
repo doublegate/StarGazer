@@ -158,7 +158,17 @@ async fn run() -> Result<()> {
                     }
                     FetchEvent::Warning(w) => eprintln!("warning: {w}"),
                 };
-                if export_uses_scratch_cache(&user, &cache) {
+                // For an empty cache: the account a plain launch would open
+                // (configured user, else the token's owner).
+                let default_user = if cache.username.is_empty() {
+                    match config.user.clone() {
+                        Some(u) => Some(u),
+                        None => client.viewer_login().await.ok(),
+                    }
+                } else {
+                    None
+                };
+                if export_uses_scratch_cache(&user, &cache, default_user.as_deref()) {
                     // Another account: sync from scratch into a private
                     // temporary directory so the user's own cache is left
                     // alone. create_dir fails if the name exists, so nothing

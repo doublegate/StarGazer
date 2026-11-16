@@ -76,8 +76,20 @@ pub fn export_needs_sync(requested: Option<&str>, cache: &StarCache, sync_flag: 
 /// exporting another account's stars must not replace yours (the next plain
 /// `stargazer` would otherwise open theirs). An empty, ownerless cache (first
 /// run) is simply filled.
-pub fn export_uses_scratch_cache(user: &str, cache: &StarCache) -> bool {
-    !cache.username.is_empty() && !same_user(user, &cache.username)
+///
+/// An empty cache is filled only for the account a plain `stargazer` would
+/// open (`default_user`: the configured user, else the token's owner);
+/// otherwise the next plain launch would open the exported account (agy
+/// review of PR #8). With no default known, it is filled as before.
+pub fn export_uses_scratch_cache(
+    user: &str,
+    cache: &StarCache,
+    default_user: Option<&str>,
+) -> bool {
+    if !cache.username.is_empty() {
+        return !same_user(user, &cache.username);
+    }
+    default_user.is_some_and(|d| !same_user(user, d.trim()))
 }
 
 /// Recompute categories when the rules changed since the cache was written.
@@ -250,12 +262,23 @@ mod tests {
     #[test]
     fn export_for_another_account_never_replaces_the_cache() {
         let c = cache("alice", 3, true);
-        assert!(export_uses_scratch_cache("bob", &c));
-        assert!(!export_uses_scratch_cache("Alice", &c), "same account");
+        assert!(export_uses_scratch_cache("bob", &c, None));
+        assert!(
+            !export_uses_scratch_cache("Alice", &c, Some("bob")),
+            "same account"
+        );
         let first_run = StarCache::default();
         assert!(
-            !export_uses_scratch_cache("bob", &first_run),
-            "ownerless cache is filled"
+            !export_uses_scratch_cache("bob", &first_run, None),
+            "no default known: an ownerless cache is filled"
+        );
+        assert!(
+            !export_uses_scratch_cache("Me", &first_run, Some("me")),
+            "the default account fills it"
+        );
+        assert!(
+            export_uses_scratch_cache("bob", &first_run, Some("me")),
+            "another account must not become the default via the cache"
         );
     }
 

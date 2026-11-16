@@ -225,6 +225,9 @@ pub struct AwesomeView {
     /// Open rows of the picker tree (`PickerRow::key`) while it is open;
     /// cleared each time the picker opens (all sections start collapsed).
     pub expanded: HashSet<String>,
+    /// The last row the picker cursor was on while rows were shown, so a
+    /// filter that matches nothing does not lose the user's place.
+    anchor: Option<PickerRow>,
 }
 
 /// An edit of the picker's filter text.
@@ -1023,7 +1026,12 @@ impl App {
             // Keep the cursor on the same row when it is still shown (e.g.
             // clearing the filter returns to the tree), else on the first
             // match.
-            let keep = self.picker_view().get(self.picker_selected()).cloned();
+            let keep = self
+                .picker_view()
+                .get(self.picker_selected())
+                .cloned()
+                .or_else(|| self.awesome.anchor.clone());
+            self.awesome.anchor = keep.clone();
             if let Overlay::AwesomePicker {
                 filter, filtering, ..
             } = &mut self.overlay
@@ -3017,6 +3025,23 @@ mod tests {
         a.handle_key(key(KeyCode::Esc));
         assert_eq!(view_names(&a), ["Platforms", "Programming Languages"]);
         assert_eq!(picker_cursor(&a), "Platforms", "its collapsed section");
+    }
+
+    #[test]
+    fn clearing_a_filter_that_matched_nothing_keeps_the_place() {
+        // agy review of PR #8: after narrowing to zero rows, clearing went
+        // to the top instead of the row last selected.
+        let mut a = open_picker();
+        a.handle_key(ch('/'));
+        for c in "screensav".chars() {
+            a.handle_key(ch(c));
+        }
+        for c in "zzz".chars() {
+            a.handle_key(ch(c));
+        }
+        assert!(a.picker_view().is_empty());
+        a.handle_key(key(KeyCode::Esc));
+        assert_eq!(picker_cursor(&a), "Platforms", "the last match's section");
     }
 
     #[test]

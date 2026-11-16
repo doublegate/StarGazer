@@ -537,7 +537,9 @@ pub fn parse_list(md: &str) -> Vec<Entry> {
 pub const INDEX_REPO: &str = "sindresorhus/awesome";
 /// Size cap for the index README (it is ~80 KB).
 const INDEX_MAX_BYTES: usize = 1024 * 1024;
-const STORE_VERSION: u32 = 1;
+/// 2 (v0.3.1): lists re-ranked in README order and the index sanitized on
+/// load; version 1 files are ignored and fetched again (agy review of #8).
+const STORE_VERSION: u32 = 2;
 
 /// Cached, parsed index.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
