@@ -11,8 +11,15 @@
 //! a sync is running edits the file *after* the sync saved its snapshot (the
 //! repo cannot come back), and its `Unstarred` message reaches the UI after
 //! the sync's `SyncDone` (channel order), removing the repo from the view too.
+//!
+//! Awesome data (index and lists, see [`crate::awesome`]) lives in separate
+//! files and does not take that lock: a list fetch can take seconds and must
+//! not hold up an unstar. After each star sync, once the lock is released,
+//! the index is revalidated; an awesome list is shown from its cache at once
+//! and re-fetched when stale, incomplete, or on a full refresh.
 
 use crate::app::{App, BgMsg, Effect, Level};
+use crate::awesome::{self, Store};
 use crate::cache::StarCache;
 use crate::clipboard::Clipboard;
 use crate::github::{FetchEvent, GitHubClient};
@@ -80,6 +87,8 @@ async fn event_loop(
     } else {
         SyncMode::Auto
     };
+    let store = Store::beside(&ctx.cache_path);
+    app.set_awesome(store.load_index().map(|c| c.index), store.last_selection());
     app.syncing = true;
     spawn_sync(ctx, mode, tx.clone(), Arc::clone(&lock));
 
@@ -133,6 +142,19 @@ fn run_effect(
                 Err(format!("refusing to open non-GitHub URL {url}"))
             };
             app.apply(BgMsg::Opened(result));
+        }
+        Effect::OpenExternal(url) => {
+            // Awesome entries link anywhere, but only absolute http(s) URLs
+            // of visible ASCII reach the opener (no file:, javascript:, or
+            // spoofing characters); the parser enforced this too.
+            let result = match awesome::clean_url(&url) {
+                Some(url) => open::that_detached(&url).map_err(|e| e.to_string()),
+                None => Err("refusing to open a non-http(s) URL".to_string()),
+            };
+            app.apply(BgMsg::Opened(result));
+        }
+        Effect::OpenAwesomeList { selection, force } => {
+            spawn_awesome_list(ctx, selection, force, tx.clone());
         }
         Effect::Copy(text) => {
             let result = clipboard.copy(&text).map(|_| text);
@@ -193,10 +215,38 @@ fn spawn_sync(ctx: &Context, mode: SyncMode, tx: UnboundedSender<BgMsg>, lock: C
     let path = ctx.cache_path.clone();
     let user = ctx.user.clone();
     let stale_days = ctx.stale_days;
+    let full = mode == SyncMode::Full;
+    let store = Store::beside(&ctx.cache_path);
     tokio::spawn(async move {
+        star_sync(&client, &user, &path, mode, stale_days, &tx, &lock).await;
+        // The awesome index after the stars, outside the cache lock. A
+        // failure keeps the cached index and is only a warning.
+        match awesome::sync_index(&client, &store, full).await {
+            Ok(c) => {
+                let _ = tx.send(BgMsg::AwesomeIndex(Box::new(c.index)));
+            }
+            Err(e) => {
+                let _ = tx.send(BgMsg::SyncWarning(format!(
+                    "awesome index not refreshed: {e}"
+                )));
+            }
+        }
+    });
+}
+
+async fn star_sync(
+    client: &GitHubClient,
+    user: &str,
+    path: &std::path::Path,
+    mode: SyncMode,
+    stale_days: u32,
+    tx: &UnboundedSender<BgMsg>,
+    lock: &CacheLock,
+) {
+    {
         // Held until the result is sent; see the module docs.
         let _guard = lock.lock().await;
-        let loaded = match StarCache::load_from(&path) {
+        let loaded = match StarCache::load_from(path) {
             Ok(l) => l,
             Err(e) => {
                 let _ = tx.send(BgMsg::SyncFailed {
@@ -223,10 +273,10 @@ fn spawn_sync(ctx: &Context, mode: SyncMode, tx: UnboundedSender<BgMsg>, lock: C
             let _ = progress_tx.send(msg);
         };
         let msg = match sync(
-            &client,
-            &user,
+            client,
+            user,
             loaded.cache,
-            &path,
+            path,
             mode,
             stale_days,
             &mut progress,
@@ -239,6 +289,68 @@ fn spawn_sync(ctx: &Context, mode: SyncMode, tx: UnboundedSender<BgMsg>, lock: C
                 partial: f.partial.map(Box::new),
             },
         };
+        let _ = tx.send(msg);
+    }
+}
+
+/// Show an awesome list: cached rows at once, then a fetch unless the
+/// cache is fresh and complete (or no token could complete it).
+fn spawn_awesome_list(
+    ctx: &Context,
+    selection: awesome::Selection,
+    force: bool,
+    tx: UnboundedSender<BgMsg>,
+) {
+    let client = Arc::clone(&ctx.client);
+    let store = Store::beside(&ctx.cache_path);
+    let stars_path = ctx.cache_path.clone();
+    let stale_days = ctx.stale_days;
+    tokio::spawn(async move {
+        let repo = selection.repo.clone();
+        let _ = store.save_selection(&selection);
+        let cached = store.load_list(&repo);
+        if let Some(c) = &cached {
+            let fresh = awesome::is_fresh(c.fetched_at, stale_days);
+            let done = !force && fresh && (c.meta_complete || !client.has_token());
+            let _ = tx.send(BgMsg::AwesomeList {
+                repo: repo.clone(),
+                rows: awesome::to_rows(c),
+                done,
+            });
+            if done {
+                return;
+            }
+        }
+        // Starred repos already carry metadata: no lookup for those.
+        let known = StarCache::load_from(&stars_path)
+            .map(|l| awesome::known_from_stars(&l.cache.repos))
+            .unwrap_or_default();
+        let progress_tx = tx.clone();
+        let progress_repo = repo.clone();
+        let mut progress = move |ev: FetchEvent| {
+            let msg = match ev {
+                FetchEvent::Progress { message, .. } | FetchEvent::Finished(message) => {
+                    BgMsg::AwesomeProgress {
+                        repo: progress_repo.clone(),
+                        text: message,
+                    }
+                }
+                FetchEvent::Warning(w) => BgMsg::SyncWarning(w),
+            };
+            let _ = progress_tx.send(msg);
+        };
+        let msg =
+            match awesome::fetch_list(&client, &store, &repo, force, &known, &mut progress).await {
+                Ok(list) => BgMsg::AwesomeList {
+                    repo,
+                    rows: awesome::to_rows(&list),
+                    done: true,
+                },
+                Err(e) => BgMsg::AwesomeFailed {
+                    repo,
+                    error: e.to_string(),
+                },
+            };
         let _ = tx.send(msg);
     });
 }

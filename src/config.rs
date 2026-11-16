@@ -6,7 +6,8 @@
 //!
 //! ```toml
 //! user = "octocat"
-//! sort = "stars"          # stars | recent | name | starred
+//! sort = "stars"          # repo list: stars | recent | name | starred
+//! category_sort = "default" # categories pane: default | stars | recent | name | starred
 //! ascii = false           # plain-ASCII icons and glyphs
 //! theme = "dark"          # dark | light | high-contrast | mono
 //! stale_days = 7          # full resync (drops unstarred repos) after N days; 0 = never
@@ -17,7 +18,7 @@
 //! selected_bg = "#303040"
 //! ```
 
-use crate::app::SortMode;
+use crate::app::{CategorySort, SortMode};
 use anyhow::{Context, Result, anyhow};
 use directories::ProjectDirs;
 use serde::Deserialize;
@@ -55,6 +56,7 @@ pub struct ColorOverrides {
 pub struct Config {
     pub user: Option<String>,
     pub sort: SortMode,
+    pub category_sort: CategorySort,
     pub ascii: bool,
     pub theme: ThemeName,
     pub stale_days: u32,
@@ -67,6 +69,7 @@ impl Default for Config {
         Self {
             user: None,
             sort: SortMode::Stars,
+            category_sort: CategorySort::Default,
             ascii: false,
             theme: ThemeName::Dark,
             stale_days: 7,
@@ -121,6 +124,7 @@ mod tests {
             r##"
             user = "octocat"
             sort = "recent"
+            category_sort = "name"
             ascii = true
             theme = "high-contrast"
             stale_days = 0
@@ -133,6 +137,7 @@ mod tests {
         .unwrap();
         assert_eq!(c.user.as_deref(), Some("octocat"));
         assert_eq!(c.sort, SortMode::RecentlyActive);
+        assert_eq!(c.category_sort, CategorySort::Name);
         assert!(c.ascii);
         assert_eq!(c.theme, ThemeName::HighContrast);
         assert_eq!(c.stale_days, 0);

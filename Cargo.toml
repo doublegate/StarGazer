@@ -1,6 +1,6 @@
 [package]
 name = "stargazer"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "TUI browser for your GitHub starred repositories: navigate, search, filter, and open stars instantly"
@@ -40,6 +40,10 @@ csv = "1"
 
 # Command line
 clap = { version = "4", features = ["derive", "env"] }
+
+# Markdown parsing of the awesome index and lists (event stream only; no
+# HTML renderer, no CLI option parser)
+pulldown-cmark = { version = "0.13", default-features = false }
 
 # Display-width-correct text handling
 unicode-width = "0.2"

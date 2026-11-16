@@ -18,7 +18,7 @@
 
 use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
-use stargazer::app::{App, Level, SortMode};
+use stargazer::app::{App, CategorySort, Level, SortMode};
 use stargazer::cache::{Loaded, StarCache};
 use stargazer::config::{Config, ThemeName, env_flag};
 use stargazer::export::{Format, export};
@@ -48,9 +48,13 @@ struct Cli {
     #[arg(long, value_enum)]
     theme: Option<ThemeName>,
 
-    /// Initial sort order
+    /// Initial sort order of the repo list
     #[arg(long, value_enum)]
     sort: Option<SortMode>,
+
+    /// Initial sort order of the Categories pane
+    #[arg(long, value_enum)]
+    category_sort: Option<CategorySort>,
 
     /// Full resync at startup (also drops repos you have unstarred)
     #[arg(long)]
@@ -121,6 +125,12 @@ async fn run() -> Result<()> {
         Some(Command::Paths) => {
             println!("config: {}", config_path.display());
             println!("cache:  {}", cache_path.display());
+            println!(
+                "awesome: {}",
+                stargazer::awesome::Store::beside(&cache_path)
+                    .dir()
+                    .display()
+            );
             Ok(())
         }
         Some(Command::Export {
@@ -231,6 +241,11 @@ async fn run() -> Result<()> {
 
             let mut app = App::new(&user, cache, sort, client.has_token());
             app.ascii = ascii;
+            let cat_sort = cli.category_sort.unwrap_or(config.category_sort);
+            if cat_sort != CategorySort::Default {
+                app.set_cat_sort(cat_sort);
+                app.status = None; // no "Category sort" toast at startup
+            }
             if let Some(w) = loaded.warning {
                 app.set_status(Level::Warn, w);
             } else if let Some(n) = notice {

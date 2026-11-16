@@ -193,3 +193,129 @@ fn ascii_mode_renders_only_ascii() {
         }
     }
 }
+
+// ── Awesome ─────────────────────────────────────────────────────────────────
+
+/// An app showing a hostile awesome list, with the Awesome row selected.
+fn awesome_app(ascii: bool) -> App {
+    use stargazer::app::BgMsg;
+    use stargazer::awesome::{Selection, parse_index};
+    let mut app = App::new("octocat", fixture(), SortMode::Stars, true);
+    app.ascii = ascii;
+    let rows: Vec<StarredRepo> = fixture()
+        .repos
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut r)| {
+            r.rank = i as u32;
+            r.external = i % 3 == 0;
+            r.category = format!("Sec\u{FE0F}tion \u{1F527} › {}", NASTY[i % NASTY.len()]);
+            if r.external {
+                r.html_url = format!("https://example.com/{i}");
+            }
+            r
+        })
+        .collect();
+    let index = parse_index(include_str!("fixtures/awesome/index.md"));
+    let label = format!("Node.js › {}", NASTY[1]);
+    app.set_awesome(
+        Some(index),
+        Some(Selection {
+            repo: "o/awesome-x".into(),
+            label,
+        }),
+    );
+    app.apply(BgMsg::AwesomeList {
+        repo: "o/awesome-x".into(),
+        rows,
+        done: true,
+    });
+    app.drain_effects();
+    app.handle_key(key(KeyCode::Left));
+    app.handle_key(key(KeyCode::Down)); // Awesome
+    assert!(app.in_awesome());
+    app
+}
+
+fn check_frame(term: &Terminal<TestBackend>, app: &App, ctx: &str) {
+    let buf = term.backend().buffer().clone();
+    assert_cells_safe(&buf, ctx);
+    let cats = app.regions.categories;
+    let repos = app.regions.repos;
+    let mut cols = vec![repos.x, repos.right() - 1];
+    if cats.width > 0 {
+        cols.extend([cats.x, cats.right() - 1]);
+    }
+    assert_borders_intact(&buf, &cols, repos.y + 1, repos.bottom() - 1, ctx);
+}
+
+fn run_awesome_case(ascii: bool, width: u16, height: u16) {
+    let ui = Ui::new(Theme::preset(ThemeName::Dark), Glyphs::new(ascii));
+    let mut app = awesome_app(ascii);
+    let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+    let ctx = |s: &str| format!("awesome ascii={ascii} {width}x{height} {s}");
+
+    // The expanded line under Awesome, then the rows, then details.
+    term.draw(|f| ui.render(f, &mut app)).unwrap();
+    check_frame(&term, &app, &ctx("sidebar"));
+    app.handle_key(key(KeyCode::Right));
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    for i in 0..45 {
+        app.handle_key(key(KeyCode::Down));
+        term.draw(|f| ui.render(f, &mut app)).unwrap();
+        check_frame(&term, &app, &ctx(&format!("row {i}")));
+    }
+
+    // The picker over everything, scrolled, then filtered to nothing.
+    app.handle_key(key(KeyCode::Left));
+    app.handle_key(key(KeyCode::Enter));
+    for i in 0..20 {
+        app.handle_key(key(KeyCode::Down));
+        term.draw(|f| ui.render(f, &mut app)).unwrap();
+        assert_cells_safe(term.backend().buffer(), &ctx(&format!("picker {i}")));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    for c in "\u{1F527}zz".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        term.draw(|f| ui.render(f, &mut app)).unwrap();
+        assert_cells_safe(term.backend().buffer(), &ctx("picker filter"));
+    }
+}
+
+#[test]
+fn awesome_view_and_picker_keep_cells_and_borders_safe() {
+    run_awesome_case(false, 120, 30);
+    run_awesome_case(false, 60, 20);
+    run_awesome_case(true, 100, 25);
+}
+
+#[test]
+fn awesome_ascii_mode_renders_only_ascii() {
+    let ui = Ui::new(Theme::preset(ThemeName::Mono), Glyphs::ASCII);
+    let mut app = awesome_app(true);
+    for r in app.awesome.repos.iter_mut() {
+        r.full_name = format!("o/r{}", r.id);
+        r.description = Some("plain".into());
+        r.category = "Tools > CLI".into();
+        r.topics.clear();
+    }
+    app.awesome.selection.as_mut().unwrap().label = "Node.js".into();
+    let mut term = Terminal::new(TestBackend::new(100, 25)).unwrap();
+    term.draw(|f| ui.render(f, &mut app)).unwrap();
+    let buf = term.backend().buffer();
+    let borders = "│─╭╮╰╯┃|#";
+    let mut saw_line = false;
+    for y in 0..buf.area.height {
+        let mut row = String::new();
+        for x in 0..buf.area.width {
+            let s = buf[(x, y)].symbol();
+            row.push_str(s);
+            assert!(
+                s.is_ascii() || borders.contains(s),
+                "non-ASCII {s:?} at ({x},{y}) in --ascii mode"
+            );
+        }
+        saw_line |= row.contains("-> Node.js");
+    }
+    assert!(saw_line, "the chosen list's line is drawn under Awesome");
+}
