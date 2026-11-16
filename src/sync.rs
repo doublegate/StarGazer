@@ -69,6 +69,15 @@ pub fn export_needs_sync(requested: Option<&str>, cache: &StarCache, sync_flag: 
     sync_flag || cache.repos.is_empty() || requested.is_some_and(|u| !same_user(u, &cache.username))
 }
 
+/// Whether an export for `user` must sync into a scratch cache instead of
+/// the real one: an export never changes whose stars the cache holds, so
+/// exporting another account's stars must not replace yours (the next plain
+/// `stargazer` would otherwise open theirs). An empty, ownerless cache (first
+/// run) is simply filled.
+pub fn export_uses_scratch_cache(user: &str, cache: &StarCache) -> bool {
+    !cache.username.is_empty() && !same_user(user, &cache.username)
+}
+
 /// Recompute categories when the rules changed since the cache was written.
 /// Returns how many repos ended up in a different category.
 pub fn refresh_categories(cache: &mut StarCache) -> usize {
@@ -226,6 +235,18 @@ mod tests {
         assert!(
             export_needs_sync(None, &cache("alice", 0, true), false),
             "empty"
+        );
+    }
+
+    #[test]
+    fn export_for_another_account_never_replaces_the_cache() {
+        let c = cache("alice", 3, true);
+        assert!(export_uses_scratch_cache("bob", &c));
+        assert!(!export_uses_scratch_cache("Alice", &c), "same account");
+        let first_run = StarCache::default();
+        assert!(
+            !export_uses_scratch_cache("bob", &first_run),
+            "ownerless cache is filled"
         );
     }
 

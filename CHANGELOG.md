@@ -44,7 +44,9 @@ All notable changes to this project are documented here. The format follows
   full sync forever, because each incremental sync moved the date it was measured from. It now
   gets one full sync, which sets the date.
 - `stargazer export` exported the cached account's stars even when `--user`,
-  `STARGAZER_USER` or the config asked for another account; it now syncs that account first.
+  `STARGAZER_USER` or the config asked for another account. It now downloads that account's
+  stars into a temporary cache for the export, leaving your own cache (and what a plain
+  `stargazer` opens) untouched.
 
 ## [0.3.0] - 2026-11-16
 

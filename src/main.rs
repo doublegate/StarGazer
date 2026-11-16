@@ -26,7 +26,8 @@ use stargazer::github::{
     DEFAULT_API_URL, FetchEvent, GitHubClient, resolve_token, validate_username,
 };
 use stargazer::sync::{
-    SyncMode, export_needs_sync, refresh_categories, same_user, sync, upgrade_notice,
+    SyncMode, export_needs_sync, export_uses_scratch_cache, refresh_categories, same_user, sync,
+    upgrade_notice,
 };
 use stargazer::theme::{Glyphs, Theme};
 use stargazer::tui::{self, Context};
@@ -157,17 +158,48 @@ async fn run() -> Result<()> {
                     }
                     FetchEvent::Warning(w) => eprintln!("warning: {w}"),
                 };
-                cache = sync(
-                    &client,
-                    &user,
-                    cache,
-                    &cache_path,
-                    SyncMode::Auto,
-                    config.stale_days,
-                    &mut progress,
-                )
-                .await
-                .map_err(|f| f.error)?;
+                if export_uses_scratch_cache(&user, &cache) {
+                    // Another account: sync from scratch into a private
+                    // temporary directory so the user's own cache is left
+                    // alone. create_dir fails if the name exists, so nothing
+                    // pre-planted in the temp directory is used.
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0);
+                    let dir = std::env::temp_dir()
+                        .join(format!("stargazer-export-{}-{nanos}", std::process::id()));
+                    std::fs::create_dir(&dir)
+                        .with_context(|| format!("creating {}", dir.display()))?;
+                    eprintln!(
+                        "exporting {user}'s stars; your cache ({}) is not changed",
+                        cache.username
+                    );
+                    let result = sync(
+                        &client,
+                        &user,
+                        StarCache::default(),
+                        &dir.join("stars.json"),
+                        SyncMode::Full,
+                        config.stale_days,
+                        &mut progress,
+                    )
+                    .await;
+                    let _ = std::fs::remove_dir_all(&dir);
+                    cache = result.map_err(|f| f.error)?;
+                } else {
+                    cache = sync(
+                        &client,
+                        &user,
+                        cache,
+                        &cache_path,
+                        SyncMode::Auto,
+                        config.stale_days,
+                        &mut progress,
+                    )
+                    .await
+                    .map_err(|f| f.error)?;
+                }
             }
             let _ = refresh_categories(&mut cache);
             match output {
