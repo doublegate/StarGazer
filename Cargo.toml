@@ -1,9 +1,20 @@
 [package]
 name = "stargazer"
-version = "0.1.0"
-edition = "2021"
-description = "TUI browser for your GitHub starred repositories — navigate, search, and open stars instantly"
-authors = []
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.88"
+description = "TUI browser for your GitHub starred repositories: navigate, search, filter, and open stars instantly"
+authors = ["DoubleGate"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/doublegate/StarGazer"
+keywords = ["github", "stars", "tui", "terminal", "ratatui"]
+categories = ["command-line-utilities"]
+publish = false
+
+[lib]
+name = "stargazer"
+path = "src/lib.rs"
 
 [[bin]]
 name = "stargazer"
@@ -11,35 +22,53 @@ path = "src/main.rs"
 
 [dependencies]
 # TUI framework and terminal backend
-ratatui     = "0.30"
-crossterm   = { version = "0.29", features = ["event-stream"] }
+# unstable-rendered-line-info: Paragraph::line_count, to clamp README scrolling
+# by wrapped height.
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
 
 # Async runtime and HTTP
-tokio       = { version = "1", features = ["full"] }
-reqwest     = { version = "0.13", features = ["json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process"] }
+reqwest = { version = "0.13", features = ["json"] }
+futures = "0.3"
 
-# Serialization
-serde       = { version = "1", features = ["derive"] }
-serde_json  = "1"
+# Serialization and configuration
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+csv = "1"
+
+# Command line
+clap = { version = "4", features = ["derive", "env"] }
 
 # Fuzzy search
-fuzzy-matcher = "0.3"
+nucleo-matcher = "0.3"
 
-# Open URLs in browser
+# Display-width-correct text handling
+unicode-width = "0.2"
+unicode-segmentation = "1"
+
+# Open URLs in browser, clipboard
 open = "5"
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 
-# XDG data/cache directory resolution
+# XDG data/config directory resolution
 directories = "6"
 
 # Date/time
-chrono      = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }
 
 # Error handling
-anyhow      = "1"
-thiserror   = "2"
+anyhow = "1"
+thiserror = "2"
+
+[dev-dependencies]
+insta = "1"
+wiremock = "0.6"
+tempfile = "3"
 
 [profile.release]
-opt-level   = 3
-lto         = true
+opt-level = 3
+lto = true
 codegen-units = 1
-strip       = "symbols"
+strip = "symbols"
