@@ -422,6 +422,92 @@ impl GitHubClient {
         Ok(Some(String::from_utf8_lossy(cut).into_owned()))
     }
 
+    /// README of `owner/repo` for parsing (awesome index and lists): a
+    /// conditional request when `etag` is given, truncated to `max_bytes`.
+    /// A missing README is an error here, unlike [`Self::fetch_readme`].
+    pub async fn fetch_readme_text(
+        &self,
+        full_name: &str,
+        etag: Option<&str>,
+        max_bytes: usize,
+    ) -> Result<ReadmeText, GitHubError> {
+        validate_full_name(full_name)?;
+        let url = format!("{}/repos/{full_name}/readme", self.api_url);
+        let resp = self
+            .send(|| {
+                let req = self
+                    .http
+                    .get(&url)
+                    .header(header::ACCEPT, "application/vnd.github.raw+json");
+                match etag {
+                    Some(tag) => req.header(header::IF_NONE_MATCH, tag),
+                    None => req,
+                }
+            })
+            .await?;
+        if resp.status() == StatusCode::NOT_MODIFIED {
+            return Ok(ReadmeText {
+                text: None,
+                etag: etag.map(str::to_string),
+            });
+        }
+        let new_etag = resp
+            .headers()
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let bytes = resp.bytes().await?;
+        let cut = &bytes[..bytes.len().min(max_bytes)];
+        Ok(ReadmeText {
+            text: Some(String::from_utf8_lossy(cut).into_owned()),
+            etag: new_etag,
+        })
+    }
+
+    /// Metadata for many `owner/repo` names, in input order (`None` for a
+    /// repo that no longer exists or is inaccessible). GraphQL, batches of
+    /// [`META_BATCH`] aliased lookups; requires a token. Renamed repos
+    /// resolve and report their current `nameWithOwner`.
+    pub async fn fetch_repos_meta(
+        &self,
+        full_names: &[String],
+        progress: &mut Progress<'_>,
+    ) -> Result<Vec<Option<RepoMeta>>, GitHubError> {
+        if !self.has_token() {
+            return Err(GitHubError::TokenRequired);
+        }
+        let url = format!("{}/graphql", self.api_url);
+        let mut out = Vec::with_capacity(full_names.len());
+        for (i, chunk) in full_names.chunks(META_BATCH).enumerate() {
+            progress(FetchEvent::Progress {
+                fetched: out.len(),
+                message: format!("Fetching star counts ({}/{})", out.len(), full_names.len()),
+            });
+            // Invalid names never reach GitHub; they simply get no metadata.
+            let valid: Vec<(usize, (&str, &str))> = chunk
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| validate_full_name(n).is_ok())
+                .filter_map(|(j, n)| n.split_once('/').map(|p| (j, p)))
+                .collect();
+            let mut batch: Vec<Option<RepoMeta>> = vec![None; chunk.len()];
+            if !valid.is_empty() {
+                let (query, vars) = repos_meta_query(&valid);
+                let body = json!({ "query": query, "variables": vars });
+                let resp = self.send(|| self.http.post(&url).json(&body)).await?;
+                let text = resp.text().await?;
+                for (slot, meta) in parse_repos_meta(&text, &valid)? {
+                    batch[slot] = meta;
+                }
+            }
+            out.extend(batch);
+            if i + 1 < full_names.len().div_ceil(META_BATCH) {
+                tokio::time::sleep(POLITE_DELAY).await;
+            }
+        }
+        Ok(out)
+    }
+
     /// Remove `owner/repo` from the authenticated user's stars.
     pub async fn unstar(&self, full_name: &str) -> Result<(), GitHubError> {
         validate_full_name(full_name)?;
@@ -558,6 +644,160 @@ pub fn parse_rest_page(body: &str) -> Result<(Vec<StarredRepo>, usize), GitHubEr
         }
     }
     Ok((repos, skipped))
+}
+
+/// Result of [`GitHubClient::fetch_readme_text`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadmeText {
+    /// `None` when the server answered 304 Not Modified.
+    pub text: Option<String>,
+    pub etag: Option<String>,
+}
+
+/// Repositories per GraphQL metadata request. A 3-alias probe cost 1 rate
+/// limit point; 100 aliases with `repositoryTopics(first: 10)` stay far
+/// below GraphQL's node limit.
+pub const META_BATCH: usize = 100;
+
+/// Repository metadata used for awesome-list entries.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
+pub struct RepoMeta {
+    /// Current `owner/name` (differs from the request after a rename).
+    pub name_with_owner: String,
+    pub database_id: u64,
+    pub stargazer_count: u64,
+    pub description: Option<String>,
+    pub language: Option<String>,
+    pub topics: Vec<String>,
+    pub pushed_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+    pub archived: bool,
+    pub fork: bool,
+    pub url: String,
+}
+
+/// Build an aliased multi-repository query. Owner and name travel as
+/// GraphQL variables ($o0/$n0, ...), never inside the query text, so list
+/// content cannot inject query syntax.
+pub fn repos_meta_query(repos: &[(usize, (&str, &str))]) -> (String, serde_json::Value) {
+    let mut params = Vec::new();
+    let mut fields = Vec::new();
+    let mut vars = serde_json::Map::new();
+    for (k, (_, (owner, name))) in repos.iter().enumerate() {
+        params.push(format!("$o{k}: String!, $n{k}: String!"));
+        fields.push(format!(
+            "r{k}: repository(owner: $o{k}, name: $n{k}) {{ ...M }}"
+        ));
+        vars.insert(format!("o{k}"), json!(owner));
+        vars.insert(format!("n{k}"), json!(name));
+    }
+    let query = format!(
+        "query({}) {{ {} }}\n\
+         fragment M on Repository {{ nameWithOwner databaseId stargazerCount description url \
+         primaryLanguage {{ name }} repositoryTopics(first: 10) {{ nodes {{ topic {{ name }} }} }} \
+         pushedAt updatedAt isArchived isFork }}",
+        params.join(", "),
+        fields.join(" ")
+    );
+    (query, serde_json::Value::Object(vars))
+}
+
+/// Parse a [`repos_meta_query`] response into `(input slot, metadata)`
+/// pairs. Missing or inaccessible repositories (`null` plus NOT_FOUND or
+/// FORBIDDEN errors) become `None`; rate limiting and responses without
+/// data are errors.
+pub fn parse_repos_meta(
+    body: &str,
+    repos: &[(usize, (&str, &str))],
+) -> Result<Vec<(usize, Option<RepoMeta>)>, GitHubError> {
+    #[derive(Deserialize)]
+    struct Resp {
+        data: Option<serde_json::Map<String, serde_json::Value>>,
+        #[serde(default)]
+        errors: Vec<GqlError>,
+    }
+    #[derive(Deserialize)]
+    struct GqlError {
+        #[serde(default, rename = "type")]
+        kind: Option<String>,
+        message: String,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Node {
+        name_with_owner: String,
+        database_id: Option<u64>,
+        stargazer_count: u64,
+        description: Option<String>,
+        url: String,
+        primary_language: Option<Named>,
+        repository_topics: Topics,
+        pushed_at: Option<DateTime<Utc>>,
+        updated_at: DateTime<Utc>,
+        is_archived: bool,
+        is_fork: bool,
+    }
+    #[derive(Deserialize)]
+    struct Named {
+        name: String,
+    }
+    #[derive(Deserialize)]
+    struct Topics {
+        nodes: Vec<TopicNode>,
+    }
+    #[derive(Deserialize)]
+    struct TopicNode {
+        topic: Named,
+    }
+
+    let resp: Resp = serde_json::from_str(body).map_err(|e| GitHubError::Parse(e.to_string()))?;
+    if resp
+        .errors
+        .iter()
+        .any(|e| e.kind.as_deref() == Some("RATE_LIMITED"))
+    {
+        return Err(GitHubError::RateLimited { reset: None });
+    }
+    let Some(data) = resp.data else {
+        let message = resp
+            .errors
+            .first()
+            .map(|e| e.message.chars().take(200).collect())
+            .unwrap_or_else(|| "response without data".into());
+        return Err(GitHubError::Api {
+            status: 200,
+            message,
+        });
+    };
+    Ok(repos
+        .iter()
+        .enumerate()
+        .map(|(k, (slot, _))| {
+            let meta = data
+                .get(&format!("r{k}"))
+                .filter(|v| !v.is_null())
+                .and_then(|v| serde_json::from_value::<Node>(v.clone()).ok())
+                .map(|n| RepoMeta {
+                    name_with_owner: n.name_with_owner,
+                    database_id: n.database_id.unwrap_or(0),
+                    stargazer_count: n.stargazer_count,
+                    description: n.description,
+                    language: n.primary_language.map(|l| l.name),
+                    topics: n
+                        .repository_topics
+                        .nodes
+                        .into_iter()
+                        .map(|t| t.topic.name)
+                        .collect(),
+                    pushed_at: n.pushed_at,
+                    updated_at: n.updated_at,
+                    archived: n.is_archived,
+                    fork: n.is_fork,
+                    url: n.url,
+                });
+            (*slot, meta)
+        })
+        .collect())
 }
 
 /// One parsed GraphQL page.
@@ -852,6 +1092,63 @@ mod tests {
             } => assert_eq!(message, "Resource not accessible"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn repos_meta_query_uses_variables_not_interpolation() {
+        let repos = [(0, ("rust-lang", "rust")), (3, ("o", "r\"} evil"))];
+        let (query, vars) = repos_meta_query(&repos);
+        assert!(
+            !query.contains("rust-lang") && !query.contains("evil"),
+            "{query}"
+        );
+        assert!(query.contains("r0: repository(owner: $o0, name: $n0)"));
+        assert!(query.contains("$o1: String!, $n1: String!"));
+        assert_eq!(vars["o0"], "rust-lang");
+        assert_eq!(vars["n1"], "r\"} evil");
+    }
+
+    #[test]
+    fn repos_meta_partial_data_rename_and_missing() {
+        let repos = [
+            (0, ("rust-lang-nursery", "rustup.rs")),
+            (2, ("ghost", "gone")),
+        ];
+        let body = r#"{"data":{
+            "r0":{"nameWithOwner":"rust-lang/rustup","databaseId":7,"stargazerCount":7125,
+                  "description":"installer","url":"https://github.com/rust-lang/rustup",
+                  "primaryLanguage":{"name":"Rust"},
+                  "repositoryTopics":{"nodes":[{"topic":{"name":"rust"}}]},
+                  "pushedAt":"2026-11-01T00:00:00Z","updatedAt":"2026-11-01T00:00:00Z",
+                  "isArchived":false,"isFork":false},
+            "r1":null},
+          "errors":[{"type":"NOT_FOUND","path":["r1"],"message":"Could not resolve"}]}"#;
+        let got = parse_repos_meta(body, &repos).unwrap();
+        assert_eq!(got.len(), 2);
+        let (slot, meta) = &got[0];
+        assert_eq!(*slot, 0);
+        let meta = meta.as_ref().unwrap();
+        assert_eq!(meta.name_with_owner, "rust-lang/rustup", "rename resolved");
+        assert_eq!(
+            (meta.stargazer_count, meta.language.as_deref()),
+            (7125, Some("Rust"))
+        );
+        assert_eq!(got[1], (2, None), "missing repo keeps its slot");
+    }
+
+    #[test]
+    fn repos_meta_rate_limit_and_no_data_are_errors() {
+        let repos = [(0, ("o", "r"))];
+        let rl = r#"{"data":null,"errors":[{"type":"RATE_LIMITED","message":"slow"}]}"#;
+        assert!(matches!(
+            parse_repos_meta(rl, &repos),
+            Err(GitHubError::RateLimited { .. })
+        ));
+        let none = r#"{"errors":[{"message":"Something broke"}]}"#;
+        assert!(matches!(
+            parse_repos_meta(none, &repos),
+            Err(GitHubError::Api { .. })
+        ));
     }
 
     #[test]
