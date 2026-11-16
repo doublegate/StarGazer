@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-labelledby="title">
+  <title id="title">StarGazer</title>
+  <!-- Vector redraw of the agy-generated emblem (assets/logo.png): a gold
+       star inside a terminal window with a prompt cursor. -->
+  <rect width="1024" height="1024" rx="192" fill="#0b1020"/>
+  <rect x="178" y="178" width="668" height="668" rx="112" fill="none" stroke="#22d3ee" stroke-width="52"/>
+  <polygon fill="#facc15" points="512.0,324.0 553.1,443.4 679.4,445.6 578.6,521.6 615.5,642.4 512.0,570.0 408.5,642.4 445.4,521.6 344.6,445.6 470.9,443.4"/>
+  <rect x="256" y="694" width="116" height="52" rx="6" fill="#22d3ee"/>
+</svg>

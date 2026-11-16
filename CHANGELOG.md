@@ -13,6 +13,11 @@ All notable changes to this project are documented here. The format follows
   removed default user, rollback); and a note on the unsigned macOS and Windows binaries
   with the Gatekeeper workaround. Signing and notarization are tracked in
   [#3](https://github.com/doublegate/StarGazer/issues/3).
+- README banner and screenshots of the v0.2.0 TUI (main view, details pane, key reference).
+- Project artwork and icons in `assets/`: banner and emblem generated with the Antigravity
+  CLI, a matching vector logo (`logo.svg`, plus a small-size variant), PNG icons from 16 to
+  1024 px, a multi-size `favicon.ico`, and a GitHub social-preview card. Provenance and
+  regeneration steps are in `assets/README.md`.
 
 ## [0.2.0] - 2026-11-16
 

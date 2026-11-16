@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="StarGazer: your GitHub stars, in the terminal" width="100%">
+</p>
+
 # StarGazer
 
 A fast, keyboard-driven TUI for browsing your GitHub starred repositories: organized,
@@ -30,6 +34,14 @@ searchable, and one keypress from your browser.
 - **Export**: `stargazer export` writes Markdown (awesome-list style), CSV or JSON
 - **Mouse support**, themes, `NO_COLOR`, and a plain-ASCII mode
 - **No config file needed**: works out of the box with your `gh` CLI login
+
+## Screenshots
+
+![StarGazer main view: category sidebar with counts, including the user's own repos, and the starred repository list sorted by stars](assets/screenshot-main.png)
+
+| Details pane with README preview (`d`) | Key reference (`?`) |
+|---|---|
+| ![Details pane showing repository metadata, topics and a README preview](assets/screenshot-details.png) | ![Help overlay listing every keybinding](assets/screenshot-help.png) |
 
 ## Categories
 

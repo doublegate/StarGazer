@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-labelledby="title">
+  <title id="title">StarGazer</title>
+  <!-- Small-size variant of assets/logo.svg for 16-48 px icons: heavier
+       frame, larger star, no cursor (it would be under a pixel). -->
+  <rect width="1024" height="1024" rx="192" fill="#0b1020"/>
+  <rect x="120" y="120" width="784" height="784" rx="150" fill="none" stroke="#22d3ee" stroke-width="104"/>
+  <polygon fill="#facc15" points="512.0,276.0 568.4,434.3 736.4,439.1 603.3,541.7 650.7,702.9 512.0,608.0 373.3,702.9 420.7,541.7 287.6,439.1 455.6,434.3"/>
+</svg>
