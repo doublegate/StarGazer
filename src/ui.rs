@@ -782,7 +782,10 @@ impl Ui {
             ("Tab / Shift-Tab", "cycle focus"),
             ("h / Left, Right", "focus left / right"),
             ("Enter / o", "open repo in browser"),
-            ("Enter on Awesome", "choose an awesome list (/ filters it)"),
+            (
+                "Enter on Awesome",
+                "list picker: Enter/l expand, h collapse, / filter",
+            ),
             ("d", "toggle details + README pane"),
             ("/", "fuzzy search (Enter opens match, Esc clears)"),
             ("s", "cycle sort of the focused pane"),
@@ -793,7 +796,10 @@ impl Ui {
             ("u", "unstar selected repo (asks first)"),
             ("Ctrl-L", "redraw screen"),
             ("q / Ctrl-C", "quit"),
-            ("mouse", "wheel scrolls, click selects, click again opens"),
+            (
+                "mouse",
+                "wheel scrolls, click selects, click again opens (pop-ups too)",
+            ),
         ];
         let lines: Vec<Line> = KEYS
             .iter()
