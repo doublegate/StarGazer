@@ -11,6 +11,7 @@
 //! - [`config`], [`export`], [`clipboard`]
 
 pub mod app;
+pub mod awesome;
 pub mod cache;
 pub mod categories;
 pub mod clipboard;

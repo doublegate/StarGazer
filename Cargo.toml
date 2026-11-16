@@ -41,6 +41,10 @@ csv = "1"
 # Command line
 clap = { version = "4", features = ["derive", "env"] }
 
+# Markdown parsing of the awesome index and lists (event stream only; no
+# HTML renderer, no CLI option parser)
+pulldown-cmark = { version = "0.13", default-features = false }
+
 # Display-width-correct text handling
 unicode-width = "0.2"
 unicode-segmentation = "1"
