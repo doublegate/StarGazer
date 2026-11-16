@@ -20,3 +20,8 @@ stars.json
 perf.data
 perf.data.old
 flamegraph.svg
+
+# Local agent instruction files (Master-Claude managed; import ~/.claude paths)
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
