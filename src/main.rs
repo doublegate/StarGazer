@@ -25,7 +25,9 @@ use stargazer::export::{Format, export};
 use stargazer::github::{
     DEFAULT_API_URL, FetchEvent, GitHubClient, resolve_token, validate_username,
 };
-use stargazer::sync::{SyncMode, refresh_categories, same_user, sync, upgrade_notice};
+use stargazer::sync::{
+    SyncMode, export_needs_sync, refresh_categories, same_user, sync, upgrade_notice,
+};
 use stargazer::theme::{Glyphs, Theme};
 use stargazer::tui::{self, Context};
 use stargazer::ui::Ui;
@@ -144,7 +146,8 @@ async fn run() -> Result<()> {
                 eprintln!("warning: {w}");
             }
             let mut cache = loaded.cache;
-            if do_sync || cache.repos.is_empty() {
+            let requested = cli.user.as_deref().or(config.user.as_deref());
+            if export_needs_sync(requested, &cache, do_sync) {
                 let cached_user = cache.username.clone();
                 let (client, user) =
                     connect(cli.user.as_deref(), &config, Some(&cached_user)).await?;

@@ -53,11 +53,20 @@ pub fn needs_full(cache: &StarCache, user: &str, mode: SyncMode, stale_days: u32
     }
     match cache.full_synced_at {
         Some(t) => Utc::now() - t > Duration::days(i64::from(stale_days)),
-        // v0.1 caches never recorded a full sync; use fetched_at as a proxy.
-        None => cache
-            .fetched_at
-            .is_none_or(|t| Utc::now() - t > Duration::days(i64::from(stale_days))),
+        // No full sync on record (a migrated v0.1 cache): do one now, which
+        // records the baseline. Using `fetched_at` instead let every
+        // incremental sync postpone the full one forever (PR #2 review).
+        None => true,
     }
+}
+
+/// Whether `stargazer export` must sync before exporting: when asked to
+/// (`--sync`), when nothing is cached, or when a different account was
+/// requested (`--user`, `STARGAZER_USER` or the config) than the one the
+/// cache holds; exporting the cache then would silently write another
+/// account's stars (PR #2 review).
+pub fn export_needs_sync(requested: Option<&str>, cache: &StarCache, sync_flag: bool) -> bool {
+    sync_flag || cache.repos.is_empty() || requested.is_some_and(|u| !same_user(u, &cache.username))
 }
 
 /// Recompute categories when the rules changed since the cache was written.
@@ -202,6 +211,25 @@ mod tests {
     }
 
     #[test]
+    fn export_syncs_for_another_account() {
+        let c = cache("alice", 3, true);
+        assert!(
+            !export_needs_sync(None, &c, false),
+            "cache of the default user"
+        );
+        assert!(
+            !export_needs_sync(Some("ALICE"), &c, false),
+            "case-insensitive"
+        );
+        assert!(export_needs_sync(Some("bob"), &c, false), "another account");
+        assert!(export_needs_sync(None, &c, true), "--sync");
+        assert!(
+            export_needs_sync(None, &cache("alice", 0, true), false),
+            "empty"
+        );
+    }
+
+    #[test]
     fn full_sync_decisions() {
         let c = cache("me", 3, true);
         assert!(!needs_full(&c, "me", SyncMode::Auto, 7));
@@ -218,6 +246,14 @@ mod tests {
         stale.full_synced_at = Some(Utc::now() - Duration::days(8));
         assert!(needs_full(&stale, "me", SyncMode::Auto, 7));
         assert!(!needs_full(&stale, "me", SyncMode::Auto, 0));
+
+        // A migrated v0.1 cache synced incrementally a minute ago still gets
+        // its first full sync: recent incremental syncs must not postpone it.
+        let mut migrated = cache("me", 3, true);
+        migrated.full_synced_at = None;
+        migrated.fetched_at = Some(Utc::now());
+        assert!(needs_full(&migrated, "me", SyncMode::Auto, 7));
+        assert!(!needs_full(&migrated, "me", SyncMode::Auto, 0), "0 = never");
     }
 
     #[test]
