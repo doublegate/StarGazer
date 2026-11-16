@@ -53,11 +53,43 @@ pub fn needs_full(cache: &StarCache, user: &str, mode: SyncMode, stale_days: u32
     }
     match cache.full_synced_at {
         Some(t) => Utc::now() - t > Duration::days(i64::from(stale_days)),
-        // v0.1 caches never recorded a full sync; use fetched_at as a proxy.
-        None => cache
-            .fetched_at
-            .is_none_or(|t| Utc::now() - t > Duration::days(i64::from(stale_days))),
+        // No full sync on record (a migrated v0.1 cache): do one now, which
+        // records the baseline. Using `fetched_at` instead let every
+        // incremental sync postpone the full one forever (PR #2 review).
+        None => true,
     }
+}
+
+/// Whether `stargazer export` must sync before exporting: when asked to
+/// (`--sync`), when nothing is cached, or when a different account was
+/// requested (`--user`, `STARGAZER_USER` or the config) than the one the
+/// cache holds; exporting the cache then would silently write another
+/// account's stars (PR #2 review).
+pub fn export_needs_sync(requested: Option<&str>, cache: &StarCache, sync_flag: bool) -> bool {
+    sync_flag
+        || cache.repos.is_empty()
+        || requested.is_some_and(|u| !same_user(u.trim(), &cache.username))
+}
+
+/// Whether an export for `user` must sync into a scratch cache instead of
+/// the real one: an export never changes whose stars the cache holds, so
+/// exporting another account's stars must not replace yours (the next plain
+/// `stargazer` would otherwise open theirs). An empty, ownerless cache (first
+/// run) is simply filled.
+///
+/// An empty cache is filled only for the account a plain `stargazer` would
+/// open (`default_user`: the configured user, else the token's owner);
+/// otherwise the next plain launch would open the exported account (agy
+/// review of PR #8). With no default known, it is filled as before.
+pub fn export_uses_scratch_cache(
+    user: &str,
+    cache: &StarCache,
+    default_user: Option<&str>,
+) -> bool {
+    if !cache.username.is_empty() {
+        return !same_user(user, &cache.username);
+    }
+    default_user.is_some_and(|d| !same_user(user, d.trim()))
 }
 
 /// Recompute categories when the rules changed since the cache was written.
@@ -159,7 +191,10 @@ pub async fn sync(
     } else if !result.not_modified {
         cache.repos = merge(new, std::mem::take(&mut cache.repos));
     }
-    if result.etag.is_some() {
+    // A 304 keeps the ETag it confirmed; anything else replaces it, so a
+    // GraphQL sync (which has none) clears a REST ETag it has outdated
+    // (agy review of PR #2).
+    if !result.not_modified {
         cache.rest_etag = result.etag;
     }
     let _ = refresh_categories(&mut cache);
@@ -202,6 +237,52 @@ mod tests {
     }
 
     #[test]
+    fn export_syncs_for_another_account() {
+        let c = cache("alice", 3, true);
+        assert!(
+            !export_needs_sync(None, &c, false),
+            "cache of the default user"
+        );
+        assert!(
+            !export_needs_sync(Some("ALICE"), &c, false),
+            "case-insensitive"
+        );
+        assert!(
+            !export_needs_sync(Some(" alice\n"), &c, false),
+            "trimmed like connect()"
+        );
+        assert!(export_needs_sync(Some("bob"), &c, false), "another account");
+        assert!(export_needs_sync(None, &c, true), "--sync");
+        assert!(
+            export_needs_sync(None, &cache("alice", 0, true), false),
+            "empty"
+        );
+    }
+
+    #[test]
+    fn export_for_another_account_never_replaces_the_cache() {
+        let c = cache("alice", 3, true);
+        assert!(export_uses_scratch_cache("bob", &c, None));
+        assert!(
+            !export_uses_scratch_cache("Alice", &c, Some("bob")),
+            "same account"
+        );
+        let first_run = StarCache::default();
+        assert!(
+            !export_uses_scratch_cache("bob", &first_run, None),
+            "no default known: an ownerless cache is filled"
+        );
+        assert!(
+            !export_uses_scratch_cache("Me", &first_run, Some("me")),
+            "the default account fills it"
+        );
+        assert!(
+            export_uses_scratch_cache("bob", &first_run, Some("me")),
+            "another account must not become the default via the cache"
+        );
+    }
+
+    #[test]
     fn full_sync_decisions() {
         let c = cache("me", 3, true);
         assert!(!needs_full(&c, "me", SyncMode::Auto, 7));
@@ -218,6 +299,14 @@ mod tests {
         stale.full_synced_at = Some(Utc::now() - Duration::days(8));
         assert!(needs_full(&stale, "me", SyncMode::Auto, 7));
         assert!(!needs_full(&stale, "me", SyncMode::Auto, 0));
+
+        // A migrated v0.1 cache synced incrementally a minute ago still gets
+        // its first full sync: recent incremental syncs must not postpone it.
+        let mut migrated = cache("me", 3, true);
+        migrated.full_synced_at = None;
+        migrated.fetched_at = Some(Utc::now());
+        assert!(needs_full(&migrated, "me", SyncMode::Auto, 7));
+        assert!(!needs_full(&migrated, "me", SyncMode::Auto, 0), "0 = never");
     }
 
     #[test]

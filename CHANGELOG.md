@@ -6,6 +6,64 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-16
+
+### Changed
+
+- **The title bar shows the sort of the focused pane.** With the sidebar focused it reads
+  `[Categories: Name A→Z]`, otherwise the repo list's sort as before. In v0.3.0 it always
+  showed the repo list's sort, even after sorting the sidebar.
+- **The Awesome list picker is a collapsible tree.** It opens with only the sections; `Enter`,
+  `→` or a click on the selected row expands a section into its lists and a list into its sub-lists, with the list
+  itself first (`Python (all)`). `←` collapses or moves to the parent. Filtering with `/` shows
+  every match with its path, and clearing it returns to the tree as you left it. It always opens
+  with every section collapsed, the cursor on the section that holds the chosen list.
+- **The pop-ups look like the rest of the app:** expander markers, counts, the same selection
+  and scrollbar as the panes, the filter in the status line like the main search, and the
+  pop-up's keys in the hint bar.
+
+### Added
+
+- **Mouse in pop-ups.** In the Awesome picker and the language picker the wheel moves the
+  selection, a click selects and a second click activates; the unstar question answers to a
+  click on `y unstar` or `n cancel`; a click outside any pop-up closes it.
+- **Antigravity PR reviewer** (CI): pull requests are reviewed by a self-hosted reviewer with a
+  StarGazer-specific style guide (`.github/agy-review.md`).
+
+### Fixed
+
+- A pop-up's left border could be missing on rows where a two-column icon sat just left of it
+  (the sidebar's emoji), leaving half an emoji where the border belongs.
+- Awesome lists: "List order" put a nested entry before its parent, and a repository listed
+  twice kept the later copy. Entries now follow the README.
+- Awesome lists: a transient GitHub error during a star-count lookup was remembered as
+  "repository missing" and not retried until a full refresh; only GitHub's not-found or
+  forbidden answer counts as missing now, and anything else is retried on the next open.
+- `--refresh` now also refreshes the awesome list restored at startup, as `r` does.
+- A cache without a recorded full sync (one carried over from v0.1) could postpone the periodic
+  full sync forever, because each incremental sync moved the date it was measured from. It now
+  gets one full sync, which sets the date.
+- Search: a typo or abbreviation in a repo name no longer outranks a real word in its
+  description; `C++` and `C#` are searchable as such; one letter already narrows the list to
+  words starting with it; repeated words count once; a search of only punctuation no longer
+  claims "by relevance".
+- README previews: a linked badge (`[![CI](...)](...)`) no longer shows as `![CI](...)`.
+- A repository URL from the cache or API is sanitized before it is shown or copied, and only
+  plain `https://github.com/` URLs are opened for starred repos.
+- README downloads stop at the size cap instead of being read whole, and never end in a broken
+  character.
+- A REST ETag is no longer kept across GraphQL syncs, where it could later make an anonymous run
+  accept a stale "not modified".
+- The cached awesome index is sanitized and version-checked when loaded; a list skipped in the
+  index no longer hands its sub-lists to the next one.
+- Release notes: the CHANGELOG section is matched literally (the version's dots were regex
+  wildcards).
+- README: the macOS quarantine command takes the binary's path; Windows has its own note.
+- `stargazer export` exported the cached account's stars even when `--user`,
+  `STARGAZER_USER` or the config asked for another account. It now downloads that account's
+  stars into a temporary cache for the export, leaving your own cache (and what a plain
+  `stargazer` opens) untouched.
+
 ## [0.3.0] - 2026-11-16
 
 ### Added
@@ -181,7 +239,8 @@ All notable changes to this project are documented here. The format follows
   open-in-browser.
 - 2026-10-26: dependency update `thiserror` 1 to 2 (#1).
 
-[Unreleased]: https://github.com/doublegate/StarGazer/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/doublegate/StarGazer/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/doublegate/StarGazer/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/doublegate/StarGazer/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/doublegate/StarGazer/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/doublegate/StarGazer/compare/a874e20...v0.2.0

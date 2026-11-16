@@ -25,7 +25,10 @@ use stargazer::export::{Format, export};
 use stargazer::github::{
     DEFAULT_API_URL, FetchEvent, GitHubClient, resolve_token, validate_username,
 };
-use stargazer::sync::{SyncMode, refresh_categories, same_user, sync, upgrade_notice};
+use stargazer::sync::{
+    SyncMode, export_needs_sync, export_uses_scratch_cache, refresh_categories, same_user, sync,
+    upgrade_notice,
+};
 use stargazer::theme::{Glyphs, Theme};
 use stargazer::tui::{self, Context};
 use stargazer::ui::Ui;
@@ -144,7 +147,8 @@ async fn run() -> Result<()> {
                 eprintln!("warning: {w}");
             }
             let mut cache = loaded.cache;
-            if do_sync || cache.repos.is_empty() {
+            let requested = cli.user.as_deref().or(config.user.as_deref());
+            if export_needs_sync(requested, &cache, do_sync) {
                 let cached_user = cache.username.clone();
                 let (client, user) =
                     connect(cli.user.as_deref(), &config, Some(&cached_user)).await?;
@@ -154,17 +158,71 @@ async fn run() -> Result<()> {
                     }
                     FetchEvent::Warning(w) => eprintln!("warning: {w}"),
                 };
-                cache = sync(
-                    &client,
-                    &user,
-                    cache,
-                    &cache_path,
-                    SyncMode::Auto,
-                    config.stale_days,
-                    &mut progress,
-                )
-                .await
-                .map_err(|f| f.error)?;
+                // For an empty cache: the account a plain launch would open
+                // (configured user, else the token's owner).
+                // Only an explicit --user / STARGAZER_USER can differ from
+                // it (otherwise `user` already is that account), so only
+                // then is it looked up.
+                let default_user = if cache.username.is_empty() && cli.user.is_some() {
+                    match config.user.clone() {
+                        Some(u) => Some(u),
+                        None => client.viewer_login().await.ok(),
+                    }
+                } else {
+                    None
+                };
+                // An explicit account whose default could not be resolved
+                // (anonymous run, lookup failed) must not fill an empty cache
+                // either: the next plain launch would open it.
+                let unresolved =
+                    cache.username.is_empty() && cli.user.is_some() && default_user.is_none();
+                if unresolved || export_uses_scratch_cache(&user, &cache, default_user.as_deref()) {
+                    // Another account: sync from scratch into a private
+                    // temporary directory so the user's own cache is left
+                    // alone. create_dir fails if the name exists, so nothing
+                    // pre-planted in the temp directory is used.
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0);
+                    let dir = std::env::temp_dir()
+                        .join(format!("stargazer-export-{}-{nanos}", std::process::id()));
+                    std::fs::create_dir(&dir)
+                        .with_context(|| format!("creating {}", dir.display()))?;
+                    // Removed on every exit from this block, including a
+                    // panic unwinding through it (agy review of PR #8).
+                    struct RemoveOnDrop(std::path::PathBuf);
+                    impl Drop for RemoveOnDrop {
+                        fn drop(&mut self) {
+                            let _ = std::fs::remove_dir_all(&self.0);
+                        }
+                    }
+                    let _scratch = RemoveOnDrop(dir.clone());
+                    eprintln!("exporting {user}'s stars; your own cache is not changed");
+                    let result = sync(
+                        &client,
+                        &user,
+                        StarCache::default(),
+                        &dir.join("stars.json"),
+                        SyncMode::Full,
+                        config.stale_days,
+                        &mut progress,
+                    )
+                    .await;
+                    cache = result.map_err(|f| f.error)?;
+                } else {
+                    cache = sync(
+                        &client,
+                        &user,
+                        cache,
+                        &cache_path,
+                        SyncMode::Auto,
+                        config.stale_days,
+                        &mut progress,
+                    )
+                    .await
+                    .map_err(|f| f.error)?;
+                }
             }
             let _ = refresh_categories(&mut cache);
             match output {

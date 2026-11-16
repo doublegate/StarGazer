@@ -15,8 +15,8 @@
 //! by display columns, so nothing ever spills into a border.
 
 use crate::app::{
-    AWESOME, App, CategorySort, Focus, Level, Overlay, PickerRow, REPO_ITEM_HEIGHT, Readme,
-    picker_rows,
+    AWESOME, App, CategorySort, Focus, Level, Overlay, PickerKind, PickerRow, REPO_ITEM_HEIGHT,
+    Readme,
 };
 use crate::cache::StarredRepo;
 use crate::text::{sanitize, truncate_width, width};
@@ -27,7 +27,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Scrollbar,
         ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
@@ -86,6 +86,12 @@ impl Ui {
             ])
             .split(f.area());
 
+        // Pop-up hit areas are re-recorded by whichever pop-up is drawn.
+        app.regions.popup = None;
+        app.regions.popup_box = None;
+        app.regions.confirm_yes = None;
+        app.regions.confirm_no = None;
+
         self.render_title(f, app, rows[0]);
         self.render_body(f, app, rows[1]);
         self.render_status(f, app, rows[2]);
@@ -93,22 +99,21 @@ impl Ui {
 
         match &app.overlay {
             Overlay::None => {}
-            Overlay::Help => self.render_help(f),
+            Overlay::Help => {
+                let rect = self.render_help(f);
+                app.regions.popup_box = Some(rect);
+            }
             Overlay::Languages { items, selected } => {
-                let items = items.clone();
-                self.render_languages(f, &items, *selected);
+                let (items, selected) = (items.clone(), *selected);
+                self.render_languages(f, app, &items, selected);
             }
             Overlay::ConfirmUnstar { full_name, .. } => {
                 let name = full_name.clone();
-                self.render_confirm(f, &name);
+                self.render_confirm(f, app, &name);
             }
-            Overlay::AwesomePicker {
-                filter,
-                filtering,
-                selected,
-            } => {
-                let (filter, filtering, selected) = (filter.clone(), *filtering, *selected);
-                self.render_awesome_picker(f, app, &filter, filtering, selected);
+            Overlay::AwesomePicker { selected, .. } => {
+                let selected = *selected;
+                self.render_awesome_picker(f, app, selected);
             }
         }
     }
@@ -134,7 +139,7 @@ impl Ui {
                 t.fg(t.stars).add_modifier(Modifier::BOLD),
             ),
             Span::styled(sep.clone(), t.fg(t.dim)),
-            Span::styled(format!("[{}]", app.sort_label()), t.fg(t.dim)),
+            Span::styled(format!("[{}]", app.title_sort_label()), t.fg(t.dim)),
         ];
         let filters = app.filter_summary();
         if !filters.is_empty() {
@@ -361,7 +366,7 @@ impl Ui {
             app.repo_sel + 1
         };
         let mut title = format!(" {cat} {} {pos}/{} ", self.glyphs.sep, app.visible.len());
-        if !app.search.trim().is_empty() {
+        if app.search_active() {
             // Results are ranked by relevance while searching, not by the
             // sort mode shown in the header.
             title.push_str(&format!(
@@ -591,16 +596,26 @@ impl Ui {
         let g = &self.glyphs;
         let max = area.width as usize;
 
-        if app.searching || !app.search.is_empty() {
+        // The Awesome picker's filter, while it has one, reads exactly like
+        // the main search.
+        let (search, typing) = match &app.overlay {
+            Overlay::AwesomePicker {
+                filter, filtering, ..
+            } if *filtering || !filter.is_empty() => (filter.as_str(), *filtering),
+            _ => (app.search.as_str(), app.searching),
+        };
+        // A status message (e.g. from the picker) wins over a shown, not
+        // being typed, search or filter (agy review of PR #8).
+        if typing || (!search.is_empty() && app.status.is_none()) {
             let prefix = " / ";
-            let query = sanitize(&app.search);
+            let query = sanitize(search);
             let q = truncate_width(&query, max.saturating_sub(width(prefix) + 1), g.ellipsis);
             let line = Line::from(vec![
                 Span::styled(prefix, t.fg(t.accent).add_modifier(Modifier::BOLD)),
                 Span::styled(q.clone(), t.fg(t.text)),
             ]);
             f.render_widget(Paragraph::new(line), area);
-            if app.searching {
+            if typing {
                 let x = area.x + (width(prefix) + width(&q)) as u16;
                 f.set_cursor_position(Position::new(x.min(area.right().saturating_sub(1)), area.y));
             }
@@ -647,7 +662,27 @@ impl Ui {
 
     fn render_hints(&self, f: &mut Frame, app: &App, area: Rect) {
         let t = &self.theme;
-        let hints: &[(&str, &str)] = if app.searching {
+        let hints: &[(&str, &str)] = if let Overlay::AwesomePicker {
+            filtering: true, ..
+        } = app.overlay
+        {
+            &[
+                ("Enter", "open"),
+                ("Esc", "clear"),
+                ("Up/Down", "move"),
+                ("Ctrl-U", "erase"),
+            ]
+        } else if let Overlay::AwesomePicker { .. } = app.overlay {
+            &[
+                ("j/k", "move"),
+                ("Enter", "open/expand"),
+                ("h/l", "collapse/expand"),
+                ("/", "filter"),
+                ("Esc", "close"),
+            ]
+        } else if let Overlay::Languages { .. } = app.overlay {
+            &[("j/k", "move"), ("Enter", "choose"), ("Esc", "close")]
+        } else if app.searching {
             &[
                 ("Enter", "open"),
                 ("Esc", "clear"),
@@ -723,10 +758,24 @@ impl Ui {
             h,
         );
         f.render_widget(Clear, rect);
+        // A two-column glyph (a sidebar icon, say) that starts just left of
+        // the pop-up covers the pop-up's left border cell. The diff then
+        // skips that cell as the glyph's second half, so the border is never
+        // sent and the terminal keeps showing half an emoji there: the
+        // border-gap bug again. Blank such glyphs so the border is drawn.
+        if rect.x > area.x {
+            let buf = f.buffer_mut();
+            for y in rect.top()..rect.bottom() {
+                let cell = &mut buf[(rect.x - 1, y)];
+                if width(cell.symbol()) > 1 {
+                    cell.set_symbol(" ");
+                }
+            }
+        }
         (rect, self.block(format!(" {title} "), true))
     }
 
-    fn render_help(&self, f: &mut Frame) {
+    fn render_help(&self, f: &mut Frame) -> Rect {
         let t = &self.theme;
         const KEYS: &[(&str, &str)] = &[
             ("j / k, Up / Down", "move in the focused pane"),
@@ -735,7 +784,10 @@ impl Ui {
             ("Tab / Shift-Tab", "cycle focus"),
             ("h / Left, Right", "focus left / right"),
             ("Enter / o", "open repo in browser"),
-            ("Enter on Awesome", "choose an awesome list (/ filters it)"),
+            (
+                "Enter on Awesome",
+                "list picker: Enter/l expand, h collapse, / filter",
+            ),
             ("d", "toggle details + README pane"),
             ("/", "fuzzy search (Enter opens match, Esc clears)"),
             ("s", "cycle sort of the focused pane"),
@@ -746,7 +798,10 @@ impl Ui {
             ("u", "unstar selected repo (asks first)"),
             ("Ctrl-L", "redraw screen"),
             ("q / Ctrl-C", "quit"),
-            ("mouse", "wheel scrolls, click selects, click again opens"),
+            (
+                "mouse",
+                "wheel scrolls, click selects, click again opens (pop-ups too)",
+            ),
         ];
         let lines: Vec<Line> = KEYS
             .iter()
@@ -767,13 +822,20 @@ impl Ui {
             .collect();
         let (rect, block) = self.popup(f, "Keys", 76, lines.len() as u16 + 2);
         f.render_widget(Paragraph::new(lines).block(block), rect);
+        rect
     }
 
-    fn render_languages(&self, f: &mut Frame, items: &[(Option<String>, usize)], selected: usize) {
+    fn render_languages(
+        &self,
+        f: &mut Frame,
+        app: &mut App,
+        items: &[(Option<String>, usize)],
+        selected: usize,
+    ) {
         let t = &self.theme;
         let (rect, block) = self.popup(f, "Language", 36, (items.len() as u16 + 2).min(22));
         let inner_w = (rect.width as usize)
-            .saturating_sub(2)
+            .saturating_sub(3)
             .saturating_sub(width(self.glyphs.pointer));
         let list_items: Vec<ListItem> = items
             .iter()
@@ -787,110 +849,120 @@ impl Ui {
                 .style(t.fg(t.text))
             })
             .collect();
-        let mut state = ListState::default().with_selected(Some(selected));
         let list = List::new(list_items)
             .block(block)
             .highlight_style(t.selection(true))
             .highlight_symbol(self.glyphs.pointer);
-        f.render_stateful_widget(list, rect, &mut state);
+        app.popup_list.select(Some(selected));
+        f.render_stateful_widget(list, rect, &mut app.popup_list);
+        let page = rect.height.saturating_sub(2) as usize;
+        self.scrollbar(f, rect, items.len(), selected, page, true);
+        app.regions.popup = Some(rect);
+        app.regions.popup_box = Some(rect);
+        app.regions.popup_page = page.max(1);
     }
 
-    fn render_awesome_picker(
+    /// The repo pane's scrollbar, on the right border of `area`, when
+    /// `len` rows overflow `page`.
+    fn scrollbar(
         &self,
         f: &mut Frame,
-        app: &App,
-        filter: &str,
-        filtering: bool,
-        selected: usize,
+        area: Rect,
+        len: usize,
+        pos: usize,
+        page: usize,
+        focused: bool,
     ) {
+        if len <= page {
+            return;
+        }
+        let mut sb = ScrollbarState::new(len).position(pos);
+        let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some(if self.glyphs.ascii { "|" } else { "│" }))
+            .thumb_symbol(if self.glyphs.ascii { "#" } else { "┃" })
+            .style(self.theme.border_style(focused));
+        f.render_stateful_widget(
+            bar,
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut sb,
+        );
+    }
+
+    fn render_awesome_picker(&self, f: &mut Frame, app: &mut App, selected: usize) {
         let t = &self.theme;
         let g = &self.glyphs;
-        let rows: Vec<PickerRow> = app
-            .awesome
-            .index
-            .as_ref()
-            .map(|i| picker_rows(i, filter))
-            .unwrap_or_default();
+        let rows: Vec<PickerRow> = app.picker_view();
+        let sections = app.awesome.index.as_ref().map_or(0, |i| i.sections.len());
         let area = f.area();
         let (rect, block) = self.popup(
             f,
-            "Awesome lists",
+            &format!("Awesome lists {} {sections} sections", g.sep),
             area.width.saturating_sub(8).min(96),
             area.height.saturating_sub(4),
         );
-        let inner = block.inner(rect);
-        f.render_widget(block, rect);
-        let [filter_area, list_area] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1)])
-            .areas(inner);
-
-        // Filter line: what is typed, or how to start typing.
-        let max = filter_area.width as usize;
-        let line = if filtering || !filter.is_empty() {
-            let q = truncate_width(&sanitize(filter), max.saturating_sub(3), g.ellipsis);
-            if filtering {
-                let x = filter_area.x + 3 + width(&q) as u16;
-                f.set_cursor_position(Position::new(
-                    x.min(filter_area.right().saturating_sub(1)),
-                    filter_area.y,
-                ));
-            }
-            Line::from(vec![
-                Span::styled(" / ", t.fg(t.accent).add_modifier(Modifier::BOLD)),
-                Span::styled(q, t.fg(t.text)),
-            ])
-        } else {
-            Line::from(Span::styled(
-                truncate_width(" / filter   Enter choose   Esc close", max, g.ellipsis),
-                t.fg(t.dim),
-            ))
-        };
-        f.render_widget(Paragraph::new(line), filter_area);
+        app.regions.popup = Some(rect);
+        app.regions.popup_box = Some(rect);
+        let page = rect.height.saturating_sub(2) as usize;
+        app.regions.popup_page = page.max(1);
 
         if rows.is_empty() {
             f.render_widget(
-                Paragraph::new("  No lists match.").style(t.fg(t.dim)),
-                list_area,
+                Paragraph::new("  No lists match.")
+                    .block(block)
+                    .style(t.fg(t.dim)),
+                rect,
             );
             return;
         }
-        let max = (list_area.width as usize).saturating_sub(width(g.pointer) + 1);
+        // Inner width minus the pointer and the scrollbar column.
+        let max = (rect.width as usize)
+            .saturating_sub(3)
+            .saturating_sub(width(g.pointer));
         let items: Vec<ListItem> = rows
             .iter()
             .map(|r| {
-                let line = match r.depth {
-                    0 => Line::from(Span::styled(
-                        truncate_width(&r.name, max, g.ellipsis),
-                        t.fg(t.accent).add_modifier(Modifier::BOLD),
-                    )),
-                    depth => {
-                        let indent = "  ".repeat(depth as usize);
-                        let name_style = if r.selectable() {
-                            t.fg(t.text)
-                        } else {
-                            // Link-less groups and lists hosted elsewhere.
-                            t.fg(t.dim)
-                        };
-                        let mut spans =
-                            vec![Span::raw(indent), Span::styled(r.name.clone(), name_style)];
-                        if let Some(d) = &r.desc {
-                            spans.push(Span::styled(format!(" {} {d}", g.sep), t.fg(t.dim)));
-                        }
-                        Line::from(fit_spans(spans, max, g.ellipsis))
-                    }
+                let marker = if !r.expander() {
+                    " "
+                } else if r.open {
+                    g.expanded
+                } else {
+                    g.collapsed
                 };
-                ListItem::new(line)
+                let name_style = match r.kind {
+                    PickerKind::Section => t.fg(t.text).add_modifier(Modifier::BOLD),
+                    _ if r.expander() || r.selectable() => t.fg(t.text),
+                    // A list hosted outside GitHub cannot be opened.
+                    _ => t.fg(t.dim),
+                };
+                let mut spans = vec![
+                    Span::raw(format!("{}{marker} ", "  ".repeat(r.depth as usize))),
+                    Span::styled(r.name.clone(), name_style),
+                ];
+                if r.expander() {
+                    spans.push(Span::styled(format!(" ({})", r.children), name_style));
+                }
+                if let Some(d) = &r.desc {
+                    spans.push(Span::styled(format!(" {} {d}", g.sep), t.fg(t.dim)));
+                }
+                ListItem::new(Line::from(fit_spans(spans, max, g.ellipsis)))
             })
             .collect();
-        let mut state = ListState::default().with_selected(Some(selected.min(rows.len() - 1)));
+        let selected = selected.min(rows.len() - 1);
         let list = List::new(items)
+            .block(block)
             .highlight_style(t.selection(true))
             .highlight_symbol(g.pointer);
-        f.render_stateful_widget(list, list_area, &mut state);
+        app.popup_list.select(Some(selected));
+        f.render_stateful_widget(list, rect, &mut app.popup_list);
+        self.scrollbar(f, rect, rows.len(), selected, page, true);
     }
 
-    fn render_confirm(&self, f: &mut Frame, full_name: &str) {
+    fn render_confirm(&self, f: &mut Frame, app: &mut App, full_name: &str) {
         let t = &self.theme;
         let (rect, block) = self.popup(f, "Unstar", 52, 5);
         let max = (rect.width as usize).saturating_sub(2);
@@ -906,12 +978,29 @@ impl Ui {
             Line::default(),
             Line::from(vec![
                 Span::styled("y", t.fg(t.accent).add_modifier(Modifier::BOLD)),
-                Span::styled(" unstar   ", t.fg(t.dim)),
+                Span::styled(" unstar", t.fg(t.dim)),
+                Span::raw("   "),
                 Span::styled("n", t.fg(t.accent).add_modifier(Modifier::BOLD)),
                 Span::styled(" cancel", t.fg(t.dim)),
             ]),
         ];
         f.render_widget(Paragraph::new(lines).block(block), rect);
+        // The button line is the third inner row: "y unstar" then "n cancel".
+        // Clipped to the pop-up's inner area: on a tiny terminal the pop-up
+        // shrinks and a button that does not fit gets no hit area at all.
+        let inner = Rect::new(
+            rect.x + 1,
+            rect.y + 1,
+            rect.width.saturating_sub(2),
+            rect.height.saturating_sub(2),
+        );
+        let button = |x: u16| {
+            let b = Rect::new(x, rect.y + 3, 8, 1).intersection(inner);
+            (b.width > 0 && b.height > 0).then_some(b)
+        };
+        app.regions.popup_box = Some(rect);
+        app.regions.confirm_yes = button(rect.x + 1);
+        app.regions.confirm_no = button(rect.x + 1 + 11);
     }
 }
 
@@ -924,6 +1013,23 @@ fn strip_inline(s: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
+        // [![alt](img)](target) -> dropped whole (a linked badge); matching
+        // the outer `[` with the image's `]` printed `![alt](target)` (agy
+        // review of PR #2).
+        if c == '['
+            && chars.get(i + 1) == Some(&'!')
+            && chars.get(i + 2) == Some(&'[')
+            && let Some(img_end) = link_end(&chars, i + 2)
+            && chars.get(img_end) == Some(&']')
+            && let Some(end) = chars
+                .get(img_end + 1)
+                .filter(|&&c| c == '(')
+                .and_then(|_| chars[img_end + 1..].iter().position(|&c| c == ')'))
+                .map(|p| p + img_end + 2)
+        {
+            i = end;
+            continue;
+        }
         // ![alt](url) -> dropped
         if c == '!'
             && chars.get(i + 1) == Some(&'[')
@@ -1062,6 +1168,15 @@ pub fn markdown_lines(md: &str, t: &Theme, g: &Glyphs) -> Vec<Line<'static>> {
 mod tests {
     use super::*;
     use crate::config::ThemeName;
+
+    #[test]
+    fn linked_badges_are_dropped_whole() {
+        // agy review of PR #2: this rendered as "![CI](target)".
+        let s = strip_inline(
+            "Build [![CI](https://x/badge.svg)](https://x/actions) ok [docs](https://d)",
+        );
+        assert_eq!(s, "Build  ok docs");
+    }
 
     #[test]
     fn star_formatting() {

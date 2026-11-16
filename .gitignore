@@ -38,3 +38,6 @@ lcov.info
 CLAUDE.local.md
 *.mc-bak
 .claude/settings.local.json
+
+# Antigravity PR reviewer: large-diff on-disk handoff (transient, removed by the script).
+/.agy-review-work/

@@ -171,6 +171,9 @@ pub struct Glyphs {
     pub arrow: &'static str,
     /// Separator of nested names (`Node.js › Cross-Platform`).
     pub path: &'static str,
+    /// Tree expanders in the Awesome picker: closed / open.
+    pub collapsed: &'static str,
+    pub expanded: &'static str,
 }
 
 impl Glyphs {
@@ -200,6 +203,8 @@ impl Glyphs {
         own: "👤",
         arrow: "→",
         path: "›",
+        collapsed: "▸",
+        expanded: "▾",
     };
 
     pub const ASCII: Self = Self {
@@ -216,6 +221,8 @@ impl Glyphs {
         own: "me",
         arrow: "->",
         path: ">",
+        collapsed: "+",
+        expanded: "-",
     };
 
     pub fn new(ascii: bool) -> Self {
@@ -298,7 +305,17 @@ mod tests {
     fn ascii_glyphs_are_ascii() {
         let g = Glyphs::ASCII;
         for s in [
-            g.logo, g.star, g.pointer, g.ellipsis, g.sep, g.error, g.own, g.arrow, g.path,
+            g.logo,
+            g.star,
+            g.pointer,
+            g.ellipsis,
+            g.sep,
+            g.error,
+            g.own,
+            g.arrow,
+            g.path,
+            g.collapsed,
+            g.expanded,
         ] {
             assert!(s.is_ascii(), "{s:?}");
         }
@@ -311,7 +328,16 @@ mod tests {
     #[test]
     fn unicode_glyphs_have_unambiguous_widths() {
         let g = Glyphs::UNICODE;
-        for s in [g.logo, g.ellipsis, g.sep, g.error, g.arrow, g.path] {
+        for s in [
+            g.logo,
+            g.ellipsis,
+            g.sep,
+            g.error,
+            g.arrow,
+            g.path,
+            g.collapsed,
+            g.expanded,
+        ] {
             assert_eq!(s.width(), 1, "{s:?}");
         }
         // The star is a single emoji-presentation codepoint: always 2 columns.

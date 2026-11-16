@@ -244,6 +244,10 @@ struct Block {
     pending: Option<String>,
     /// Table cells (rows only): text per cell.
     cells: Vec<String>,
+    /// Position in the document, counted when the item or row *opens*:
+    /// items are reported when they close, so a nested item would
+    /// otherwise come before its parent.
+    order: usize,
 }
 
 impl Block {
@@ -287,6 +291,7 @@ fn walk(md: &str, mut on_block: impl FnMut(usize, &[String], Block) -> bool) {
     let mut row: Option<Block> = None; // open table row
     let mut in_table_head = false;
     let mut image_depth = 0usize;
+    let mut opened = 0usize; // items and rows opened so far
 
     for event in Parser::new_ext(md, opts) {
         match event {
@@ -299,7 +304,11 @@ fn walk(md: &str, mut on_block: impl FnMut(usize, &[String], Block) -> bool) {
             }
             Event::Start(Tag::Item) => {
                 // Text after a nested list belongs to the nested items.
-                stack.push(Block::default());
+                stack.push(Block {
+                    order: opened,
+                    ..Block::default()
+                });
+                opened += 1;
             }
             Event::End(TagEnd::Item) => {
                 if let Some(block) = stack.pop() {
@@ -311,7 +320,13 @@ fn walk(md: &str, mut on_block: impl FnMut(usize, &[String], Block) -> bool) {
             }
             Event::Start(Tag::TableHead) => in_table_head = true,
             Event::End(TagEnd::TableHead) => in_table_head = false,
-            Event::Start(Tag::TableRow) if !in_table_head => row = Some(Block::default()),
+            Event::Start(Tag::TableRow) if !in_table_head => {
+                row = Some(Block {
+                    order: opened,
+                    ..Block::default()
+                });
+                opened += 1;
+            }
             Event::End(TagEnd::TableRow) => {
                 if let Some(block) = row.take() {
                     let path = heading_path(&headings);
@@ -392,6 +407,15 @@ pub fn parse_index(md: &str) -> AwesomeIndex {
     let mut pending_children: Vec<ListRef> = Vec::new();
     let mut lists = 0usize;
     walk(bounded(md), |depth, path, block| {
+        // A list closing now owns the sub-lists that closed before it. Taken
+        // here, before any early return, so a skipped list's sub-lists are
+        // dropped with it instead of attaching to the next list (agy review
+        // of PR #7).
+        let children = if depth == 1 {
+            std::mem::take(&mut pending_children)
+        } else {
+            Vec::new()
+        };
         // Sections are the H2 headings; entries outside one are preamble.
         let Some(section) = path.first() else {
             return true;
@@ -437,7 +461,7 @@ pub fn parse_index(md: &str) -> AwesomeIndex {
             pending_children.push(item);
         } else if let Some(section) = index.sections.last_mut() {
             let mut item = item;
-            item.children = std::mem::take(&mut pending_children);
+            item.children = children;
             section.items.push(item);
         }
         lists += 1;
@@ -484,10 +508,17 @@ pub fn parse_list(md: &str) -> Vec<Entry> {
             name,
             desc,
             path: path.to_vec(),
-            rank: entries.len() as u32,
+            // Document position for now; renumbered below.
+            rank: block.order as u32,
         });
         entries.len() < MAX_ENTRIES
     });
+    // Items arrive when they close (a nested item before its parent), so
+    // restore README order and number the entries 0.. in it.
+    entries.sort_by_key(|e| e.rank);
+    for (i, e) in entries.iter_mut().enumerate() {
+        e.rank = i as u32;
+    }
     entries
 }
 
@@ -506,7 +537,9 @@ pub fn parse_list(md: &str) -> Vec<Entry> {
 pub const INDEX_REPO: &str = "sindresorhus/awesome";
 /// Size cap for the index README (it is ~80 KB).
 const INDEX_MAX_BYTES: usize = 1024 * 1024;
-const STORE_VERSION: u32 = 1;
+/// 2 (v0.3.1): lists re-ranked in README order and the index sanitized on
+/// load; version 1 files are ignored and fetched again (agy review of #8).
+const STORE_VERSION: u32 = 2;
 
 /// Cached, parsed index.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -604,16 +637,40 @@ impl Store {
         crate::cache::write_atomic(path, &serde_json::to_vec(value)?)
     }
 
+    /// The cached index, if it is of this version. Its strings are
+    /// sanitized again on load: the file is outside our control between
+    /// runs, and the picker draws them (agy review of PR #7).
     pub fn load_index(&self) -> Option<IndexCache> {
-        Self::load(&self.index_path())
+        let mut cache: IndexCache = Self::load(&self.index_path())?;
+        if cache.version != STORE_VERSION {
+            return None;
+        }
+        fn clean_ref(l: &mut ListRef) {
+            l.name = clean(&l.name, MAX_NAME);
+            l.desc = l.desc.as_deref().map(|d| clean(d, MAX_DESC));
+            // A tampered entry must not become choosable (agy review).
+            l.url = l.url.as_deref().and_then(clean_url);
+            l.repo = l.repo.take().filter(|r| validate_full_name(r).is_ok());
+            l.children.iter_mut().for_each(clean_ref);
+        }
+        for s in &mut cache.index.sections {
+            s.name = clean(&s.name, MAX_HEADING);
+            s.items.iter_mut().for_each(clean_ref);
+        }
+        Some(cache)
     }
 
     pub fn load_list(&self, repo: &str) -> Option<ListCache> {
-        Self::load::<ListCache>(&self.list_path(repo)?).filter(|c| c.repo == repo)
+        Self::load::<ListCache>(&self.list_path(repo)?)
+            .filter(|c| c.repo == repo && c.version == STORE_VERSION)
     }
 
+    /// The last chosen list, ignored when its repository name is not valid
+    /// (a damaged state.json must not queue a fetch that can only fail).
     pub fn last_selection(&self) -> Option<Selection> {
-        Self::load::<State>(&self.state_path())?.last
+        Self::load::<State>(&self.state_path())?
+            .last
+            .filter(|s| validate_full_name(&s.repo).is_ok())
     }
 
     pub fn save_selection(&self, sel: &Selection) -> anyhow::Result<()> {
@@ -1035,6 +1092,12 @@ mod tests {
 
         let nested = by_name("child-tool");
         assert_eq!(nested.path, ["Libraries"]);
+        // PR #7 review (Codex): a nested item closes before its parent, so
+        // ranks must follow where entries *start* in the README.
+        assert!(
+            by_name("parent-lib").rank < nested.rank,
+            "parent before child"
+        );
 
         let onfido = by_name("Onfido");
         assert_eq!(onfido.url, "https://onfido.com");
@@ -1122,6 +1185,67 @@ mod tests {
             .collect();
         let idx = parse_index(&format!("## S\n\n{md}"));
         assert_eq!(idx.sections[0].items.len(), MAX_LISTS);
+    }
+
+    #[test]
+    fn a_skipped_list_does_not_hand_its_sub_lists_to_the_next() {
+        // agy review of PR #7: children close before their parent, so a
+        // parent dropped for a bad link left its children pending.
+        let md = "## S\n\n- [Bad](javascript:alert(1))\n\t- [Child](https://github.com/o/child)\n- [Good](https://github.com/o/good)\n";
+        let idx = parse_index(md);
+        let good = &idx.sections[0].items[0];
+        assert_eq!(good.name, "Good");
+        assert!(good.children.is_empty(), "{:?}", good.children);
+    }
+
+    #[test]
+    fn cached_index_is_sanitized_and_version_checked_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::beside(&dir.path().join("stars.json"));
+        let hostile = AwesomeIndex {
+            sections: vec![Section {
+                name: "Sec\u{202E}tion".into(),
+                items: vec![
+                    ListRef {
+                        name: "na\u{200D}\u{1F527}me".into(),
+                        desc: Some("d\tesc".into()),
+                        url: None,
+                        repo: None,
+                        children: Vec::new(),
+                    },
+                    ListRef {
+                        name: "evil".into(),
+                        desc: None,
+                        url: Some("javascript:alert(1)".into()),
+                        repo: Some("../../etc".into()),
+                        children: Vec::new(),
+                    },
+                ],
+            }],
+        };
+        let write = |version| {
+            let c = IndexCache {
+                version,
+                etag: None,
+                fetched_at: None,
+                index: hostile.clone(),
+            };
+            crate::cache::write_atomic(&store.index_path(), &serde_json::to_vec(&c).unwrap())
+                .unwrap();
+        };
+        write(STORE_VERSION);
+        let loaded = store.load_index().unwrap();
+        let s = &loaded.index.sections[0];
+        assert_eq!(s.name, sanitize("Sec\u{202E}tion"));
+        assert_eq!(s.items[0].name, sanitize("na\u{200D}\u{1F527}me"));
+        assert!(!s.items[0].desc.as_deref().unwrap().contains('\t'));
+        assert_eq!(
+            (s.items[1].repo.as_deref(), s.items[1].url.as_deref()),
+            (None, None),
+            "tampered entry not choosable"
+        );
+        write(STORE_VERSION + 1);
+        assert!(store.load_index().is_none(), "other version: ignored");
     }
 
     #[test]

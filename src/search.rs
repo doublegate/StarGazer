@@ -11,7 +11,7 @@
 //! | match (term vs one word)                  | quality |
 //! |-------------------------------------------|---------|
 //! | exact word                                | 10      |
-//! | word starts with the term (2+ chars)      | 7       |
+//! | word starts with the term                 | 7       |
 //! | term inside the word (4+ chars)           | 5       |
 //! | typo: 1 edit (5+ chars), 2 edits (8+)     | 4       |
 //! | fuzzy: in-order letters within the word   | 2       |
@@ -47,14 +47,37 @@ const OWNER: u32 = 6;
 const LABEL: u32 = 5;
 const DESC: u32 = 3;
 
+/// Added to exact, prefix and infix matches so that a real word in any
+/// field outranks a typo or fuzzy match in any field: weak matches really
+/// come last, as documented (agy review of PR #6: a name typo, 10 * 4,
+/// used to beat an exact description word, 3 * 10).
+const STRONG: u32 = 100;
+
 const PHRASE_IN_NAME: u32 = 40;
 const PHRASE_IN_DESC: u32 = 20;
 
-/// Lowercased words of `s`, split on anything that is not alphanumeric.
+/// Lowercased words of `s`, split on anything that is not alphanumeric,
+/// except that `+` and `#` stay inside a word so `C++` and `C#` are not
+/// both just `c` (agy review of PR #6); leading ones (`#rust`) are dropped.
+///
+/// A `+` or `#` followed by a letter separates words, so `React+TypeScript`
+/// is two words while `c++17` stays one (agy review of PR #8).
 pub fn words(s: &str) -> Vec<String> {
-    s.split(|c: char| !c.is_alphanumeric())
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        let joiner = (c == '+' || c == '#') && !chars.get(i + 1).is_some_and(|n| n.is_alphabetic());
+        if c.is_alphanumeric() || joiner {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+    }
+    out.push(cur);
+    out.into_iter()
+        .map(|w| w.trim_start_matches(['+', '#']).to_lowercase())
         .filter(|w| !w.is_empty())
-        .map(|w| w.to_lowercase())
         .collect()
 }
 
@@ -105,8 +128,12 @@ pub struct Query {
 
 impl Query {
     pub fn parse(q: &str) -> Self {
-        let terms = words(q);
-        let phrase = (terms.len() > 1).then(|| phrase_text(&terms));
+        // The phrase keeps every word ("end to end"); for scoring a
+        // repeated word counts once ("rust rust" is "rust").
+        let all = words(q);
+        let phrase = (all.len() > 1).then(|| phrase_text(&all));
+        let mut seen = std::collections::HashSet::new();
+        let terms: Vec<String> = all.into_iter().filter(|t| seen.insert(t.clone())).collect();
         Self { terms, phrase }
     }
 
@@ -128,7 +155,9 @@ impl Query {
                 (DESC, &doc.desc),
             ]
             .iter()
-            .filter_map(|(weight, ws)| best_quality(term, ws).map(|q| weight * q))
+            .filter_map(|(weight, ws)| {
+                best_quality(term, ws).map(|q| weight * q + if q >= INFIX { STRONG } else { 0 })
+            })
             .max()?;
             total += best;
         }
@@ -155,7 +184,9 @@ pub fn quality(term: &str, word: &str) -> Option<u32> {
     }
     let tl = term.chars().count();
     let wl = word.chars().count();
-    if tl >= 2 && word.starts_with(term) {
+    // One letter already narrows to words starting with it, so the list
+    // does not empty out on the first key typed (agy review of PR #6).
+    if tl >= 1 && word.starts_with(term) {
         return Some(PREFIX);
     }
     if tl >= 4 && word.contains(term) {
@@ -279,6 +310,48 @@ mod tests {
         assert_eq!(quality("rs", "rust"), None, "too loose for 2 chars");
         assert_eq!(quality("abc", "abcdefghijklmn"), Some(PREFIX));
         assert_eq!(quality("acn", "abcdefghijklmn"), None, "fuzzy length bound");
+    }
+
+    #[test]
+    fn a_real_word_anywhere_beats_a_typo_in_the_name() {
+        // agy review of PR #6: "crates" ranked a repo named "crate" (a name
+        // typo, 10 * 4 = 40) above one with "crates" in its description (30).
+        let repos = [
+            repo("o/crate", "something else", None, &[]),
+            repo("o/registry", "Browse crates and versions", None, &[]),
+        ];
+        assert_eq!(rank("crates", &repos), ["o/registry", "o/crate"]);
+    }
+
+    #[test]
+    fn plus_and_hash_stay_in_words() {
+        let repos = [
+            repo("o/plain-c", "a tool", Some("C"), &[]),
+            repo("o/cpp", "a tool", Some("C++"), &[]),
+            repo("o/cs", "a tool", Some("C#"), &[]),
+        ];
+        assert_eq!(rank("c++", &repos), ["o/cpp"]);
+        assert_eq!(rank("c#", &repos), ["o/cs"]);
+        assert_eq!(words("#rust C++17, x"), ["rust", "c++17", "x"]);
+        assert_eq!(
+            words("React+TypeScript rust+ui F# c++"),
+            ["react", "typescript", "rust", "ui", "f#", "c++"]
+        );
+    }
+
+    #[test]
+    fn one_letter_and_repeated_terms() {
+        let repos = [
+            repo("o/ratatui", "tui", None, &[]),
+            repo("o/zed", "editor", None, &[]),
+        ];
+        assert_eq!(rank("r", &repos), ["o/ratatui"], "one letter is a prefix");
+        assert_eq!(score("rust rust", &repos[0]), score("rust", &repos[0]));
+        // ...but the phrase keeps repeated words (agy review of PR #8).
+        let e2e = repo("o/tests", "Run end to end tests in CI", None, &[]);
+        let other = repo("o/other", "the end; to be continued", None, &[]);
+        assert!(score("end to end", &e2e) > score("end to end", &other));
+        assert!(Query::parse("++ .. --").is_empty(), "punctuation only");
     }
 
     #[test]

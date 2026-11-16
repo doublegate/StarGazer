@@ -224,6 +224,7 @@ fn awesome_app(ascii: bool) -> App {
             repo: "o/awesome-x".into(),
             label,
         }),
+        false,
     );
     app.apply(BgMsg::AwesomeList {
         repo: "o/awesome-x".into(),
@@ -266,13 +267,24 @@ fn run_awesome_case(ascii: bool, width: u16, height: u16) {
         check_frame(&term, &app, &ctx(&format!("row {i}")));
     }
 
-    // The picker over everything, scrolled, then filtered to nothing.
+    // The picker over everything: collapsed, then every expander opened
+    // while walking down (so it scrolls), then filtered to nothing.
     app.handle_key(key(KeyCode::Left));
     app.handle_key(key(KeyCode::Enter));
-    for i in 0..20 {
+    for i in 0..40 {
+        app.handle_key(key(KeyCode::Right)); // expands, or steps in
         app.handle_key(key(KeyCode::Down));
         term.draw(|f| ui.render(f, &mut app)).unwrap();
-        assert_cells_safe(term.backend().buffer(), &ctx(&format!("picker {i}")));
+        let ctx = ctx(&format!("picker {i}"));
+        assert_cells_safe(term.backend().buffer(), &ctx);
+        let p = app.regions.popup.expect("picker region recorded");
+        assert_borders_intact(
+            term.backend().buffer(),
+            &[p.x, p.right() - 1],
+            p.y + 1,
+            p.bottom() - 1,
+            &ctx,
+        );
     }
     app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
     for c in "\u{1F527}zz".chars() {
@@ -318,4 +330,201 @@ fn awesome_ascii_mode_renders_only_ascii() {
         saw_line |= row.contains("-> Node.js");
     }
     assert!(saw_line, "the chosen list's line is drawn under Awesome");
+}
+
+// ── Pop-up mouse ────────────────────────────────────────────────────────────
+
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
+use stargazer::app::Overlay;
+
+fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+fn click(app: &mut App, x: u16, y: u16) {
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y));
+}
+
+/// Screen position of list row `i` (counted from the top of the visible
+/// list) inside a bordered pop-up `p`.
+fn row_pos(p: Rect, i: u16) -> (u16, u16) {
+    (p.x + 4, p.y + 1 + i)
+}
+
+fn draw(term: &mut Terminal<TestBackend>, ui: &Ui, app: &mut App) {
+    term.draw(|f| ui.render(f, app)).unwrap();
+}
+
+#[test]
+fn awesome_picker_mouse_selects_activates_scrolls_and_closes() {
+    let ui = Ui::new(Theme::preset(ThemeName::Dark), Glyphs::UNICODE);
+    let mut app = awesome_app(false);
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    app.handle_key(key(KeyCode::Enter)); // picker, sidebar focused on Awesome
+    draw(&mut term, &ui, &mut app);
+    let names = |a: &App| {
+        a.picker_view()
+            .iter()
+            .map(|r| r.name.clone())
+            .collect::<Vec<_>>()
+    };
+    let sel = |a: &App| match a.overlay {
+        Overlay::AwesomePicker { selected, .. } => selected,
+        _ => panic!("picker closed"),
+    };
+    let p = app.regions.popup.unwrap();
+
+    // Click a row: selects it. Click it again: toggles it.
+    let target = names(&app)
+        .iter()
+        .position(|n| n == "Programming Languages")
+        .unwrap() as u16;
+    let (x, y) = row_pos(p, target);
+    click(&mut app, x, y);
+    assert_eq!(sel(&app), target as usize);
+    let before = names(&app).len();
+    click(&mut app, x, y);
+    draw(&mut term, &ui, &mut app);
+    assert!(names(&app).len() > before, "second click expanded it");
+    assert!(names(&app).contains(&"JavaScript".to_string()));
+
+    // The wheel moves the selection, clamped at the last row.
+    for _ in 0..2 {
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, x, y));
+    }
+    assert_eq!(sel(&app), target as usize + 2);
+    for _ in 0..50 {
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, x, y));
+    }
+    assert_eq!(sel(&app), names(&app).len() - 1);
+    for _ in 0..50 {
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, x, y));
+    }
+    assert_eq!(sel(&app), 0);
+
+    // Click a list leaf twice: chooses it and closes the picker.
+    draw(&mut term, &ui, &mut app);
+    let rust = names(&app).iter().position(|n| n == "Rust").unwrap() as u16;
+    let (x, y) = row_pos(
+        app.regions.popup.unwrap(),
+        rust - app.popup_list.offset() as u16,
+    );
+    click(&mut app, x, y);
+    click(&mut app, x, y);
+    assert_eq!(app.overlay, Overlay::None);
+    assert_eq!(app.awesome.selection.as_ref().unwrap().label, "Rust");
+
+    // Reopen and click outside: closes without choosing anything.
+    app.handle_key(key(KeyCode::Left));
+    app.handle_key(key(KeyCode::Enter));
+    draw(&mut term, &ui, &mut app);
+    app.drain_effects();
+    click(&mut app, 0, 0);
+    assert_eq!(app.overlay, Overlay::None);
+    assert!(app.drain_effects().is_empty());
+}
+
+#[test]
+fn language_picker_and_unstar_confirmation_take_mouse_clicks() {
+    let ui = Ui::new(Theme::preset(ThemeName::Dark), Glyphs::UNICODE);
+    let mut app = App::new("octocat", fixture(), SortMode::Stars, true);
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+
+    // Language picker: the second row is the most common language.
+    app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+    draw(&mut term, &ui, &mut app);
+    let (x, y) = row_pos(app.regions.popup.unwrap(), 1);
+    click(&mut app, x, y);
+    assert!(app.language.is_none(), "first click only selects");
+    click(&mut app, x, y);
+    assert_eq!(app.overlay, Overlay::None);
+    assert!(app.language.is_some());
+
+    // Unstar: clicking "n cancel" cancels; clicking "y unstar" confirms.
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+    draw(&mut term, &ui, &mut app);
+    let no = app.regions.confirm_no.unwrap();
+    click(&mut app, no.x, no.y);
+    assert_eq!(app.overlay, Overlay::None);
+    assert!(app.drain_effects().is_empty());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+    draw(&mut term, &ui, &mut app);
+    let b = app.regions.popup_box.unwrap();
+    click(&mut app, b.x + 2, b.y + 1); // the question text: nothing happens
+    assert!(matches!(app.overlay, Overlay::ConfirmUnstar { .. }));
+    let yes = app.regions.confirm_yes.unwrap();
+    assert_eq!(term.backend().buffer()[(yes.x, yes.y)].symbol(), "y");
+    click(&mut app, yes.x + 3, yes.y);
+    assert!(matches!(
+        app.drain_effects().as_slice(),
+        [stargazer::app::Effect::Unstar { .. }]
+    ));
+
+    // Help closes on any click.
+    app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+    draw(&mut term, &ui, &mut app);
+    click(&mut app, 60, 15);
+    assert_eq!(app.overlay, Overlay::None);
+}
+
+#[test]
+fn awesome_picker_ascii_renders_only_ascii() {
+    let ui = Ui::new(Theme::preset(ThemeName::Mono), Glyphs::ASCII);
+    let mut app = awesome_app(true);
+    app.awesome.selection.as_mut().unwrap().label = "Node.js".into();
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(key(KeyCode::Right)); // open the first section
+    let mut term = Terminal::new(TestBackend::new(100, 25)).unwrap();
+    draw(&mut term, &ui, &mut app);
+    let buf = term.backend().buffer();
+    let borders = "│─╭╮╰╯┃|#";
+    let mut text = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            let s = buf[(x, y)].symbol();
+            text.push_str(s);
+            // Fixture list names come from the CC0 index and are ASCII.
+            assert!(
+                s.is_ascii() || borders.contains(s),
+                "non-ASCII {s:?} at ({x},{y})"
+            );
+        }
+    }
+    assert!(text.contains("- Platforms"), "open section marker");
+    assert!(
+        text.contains("+ Programming Languages"),
+        "closed section marker"
+    );
+}
+
+#[test]
+fn unstar_buttons_stay_inside_a_shrunken_popup() {
+    // agy review of PR #8: on a tiny terminal the pop-up shrinks and the
+    // button hit areas must not land on its border or outside it.
+    let ui = Ui::new(Theme::preset(ThemeName::Dark), Glyphs::UNICODE);
+    for (w, h) in [(120, 30), (24, 8), (14, 7)] {
+        let mut app = App::new("octocat", fixture(), SortMode::Stars, true);
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        draw(&mut term, &ui, &mut app);
+        let b = app.regions.popup_box.unwrap();
+        let inner = Rect::new(b.x + 1, b.y + 1, b.width - 2, b.height - 2);
+        for btn in [app.regions.confirm_yes, app.regions.confirm_no]
+            .into_iter()
+            .flatten()
+        {
+            assert_eq!(
+                btn.intersection(inner),
+                btn,
+                "{w}x{h}: {btn:?} outside {inner:?}"
+            );
+        }
+    }
 }

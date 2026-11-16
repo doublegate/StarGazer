@@ -113,7 +113,7 @@ jobs:
         run: |
           version="${TAG#v}"
           awk -v v="$version" '
-            $0 ~ "^## \\[" v "\\]" { found=1; next }
+            index($0, "## [" v "]") == 1 { found=1; next }
             found && /^## \[/ { exit }
             found { print }
           ' CHANGELOG.md > notes.md

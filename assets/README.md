@@ -15,7 +15,7 @@ Images used by the project README, the GitHub repository page, and as project ic
 | `pack_ico.py` | Packs PNGs into a PNG-entry `.ico` | Hand-written; ImageMagick's own ICO output is ~30x larger |
 | `social-preview.png` | GitHub social preview, 1280x640, centered layout | The text-free right side of `banner.png` mirrored into a symmetric background; a solid navy center panel (opaque within 300 px of center, fading out by 520 px) keeps the text area free of artwork; `logo.svg` without its background; ImageMagick text |
 | `screenshot-{main,details,help}.png` | TUI screenshots (v0.2.0) | Konsole, captured with Spectacle and cropped with ImageMagick |
-| `screenshot-awesome{,-picker}.png` | Awesome list browser and picker (v0.3.0) | StarGazer in tmux, Konsole attached to the session so keys can be scripted with `tmux send-keys`; captured with `spectacle -a -b -n` and cropped to the terminal area |
+| `screenshot-awesome{,-picker}.png` | Awesome list browser (v0.3.0) and the collapsible picker (v0.3.1) | StarGazer in tmux, Konsole attached to the session so keys can be scripted with `tmux send-keys`; captured with `spectacle -a -b -n` and cropped to the terminal area |
 
 Palette: navy `#0b1020`, cyan `#22d3ee`, gold `#facc15`. Fonts: Noto Sans Bold (title),
 Noto Sans Mono Bold (tagline).
@@ -24,15 +24,15 @@ Noto Sans Mono Bold (tagline).
 
 ```bash
 cd assets
-for s in 16 32 48; do rsvg-convert -w $s -h $s logo-small.svg -o icons/icon-$s.png; done
-for s in 64 128 180 256 512 1024; do rsvg-convert -w $s -h $s logo.svg -o icons/icon-$s.png; done
+for s in 16 32 48; do rsvg-convert -w "$s" -h "$s" logo-small.svg -o "icons/icon-$s.png"; done
+for s in 64 128 180 256 512 1024; do rsvg-convert -w "$s" -h "$s" logo.svg -o "icons/icon-$s.png"; done
 magick icons/icon-16.png icons/icon-32.png icons/icon-48.png icons/favicon.ico
 optipng -quiet -o2 icons/*.png
 
 # Windows application icon (embedded by build.rs)
 mkdir -p /tmp/ico
-for s in 16 24 32 48; do rsvg-convert -w $s -h $s logo-small.svg -o /tmp/ico/$s.png; done
-for s in 64 128 256; do rsvg-convert -w $s -h $s logo.svg -o /tmp/ico/$s.png; done
+for s in 16 24 32 48; do rsvg-convert -w "$s" -h "$s" logo-small.svg -o "/tmp/ico/$s.png"; done
+for s in 64 128 256; do rsvg-convert -w "$s" -h "$s" logo.svg -o "/tmp/ico/$s.png"; done
 optipng -quiet -o2 /tmp/ico/*.png
 ./pack_ico.py icons/stargazer.ico /tmp/ico/{16,24,32,48,64,128,256}.png
 ```

@@ -418,9 +418,7 @@ impl GitHubClient {
             Err(GitHubError::NotFound(_)) => return Ok(None),
             Err(e) => return Err(e),
         };
-        let bytes = resp.bytes().await?;
-        let cut = &bytes[..bytes.len().min(MAX_README_BYTES)];
-        Ok(Some(String::from_utf8_lossy(cut).into_owned()))
+        Ok(Some(read_capped(resp, MAX_README_BYTES).await?))
     }
 
     /// README of `owner/repo` for parsing (awesome index and lists): a
@@ -457,10 +455,8 @@ impl GitHubClient {
             .get(header::ETAG)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        let bytes = resp.bytes().await?;
-        let cut = &bytes[..bytes.len().min(max_bytes)];
         Ok(ReadmeText {
-            text: Some(String::from_utf8_lossy(cut).into_owned()),
+            text: Some(read_capped(resp, max_bytes).await?),
             etag: new_etag,
         })
     }
@@ -684,6 +680,46 @@ pub fn parse_rest_page(body: &str) -> Result<(Vec<StarredRepo>, usize), GitHubEr
     Ok((repos, skipped))
 }
 
+/// Body text of `resp`, read chunk by chunk and stopped at `max` bytes, so a
+/// huge response is never buffered whole; cut at a UTF-8 boundary so the cap
+/// cannot leave a broken character (agy reviews of PRs #2 and #7).
+async fn read_capped(mut resp: Response, max: usize) -> Result<String, GitHubError> {
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < max {
+        match resp.chunk().await? {
+            Some(chunk) => buf.extend_from_slice(&chunk[..chunk.len().min(max - buf.len())]),
+            None => break,
+        }
+    }
+    Ok(utf8_prefix(&buf))
+}
+
+/// `bytes` as text, dropping a truncated character at the end; any invalid
+/// bytes elsewhere become U+FFFD as before.
+pub fn utf8_prefix(bytes: &[u8]) -> String {
+    // Only the tail matters (an invalid byte earlier must not stop this):
+    // walk back over continuation bytes to the last lead byte and drop that
+    // character if it needs more bytes than are left.
+    let mut end = bytes.len();
+    for back in 1..=bytes.len().min(4) {
+        let b = bytes[bytes.len() - back];
+        if b & 0xC0 == 0x80 {
+            continue; // continuation byte
+        }
+        let need = match b {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF7 => 4,
+            _ => 1,
+        };
+        if need > back {
+            end = bytes.len() - back;
+        }
+        break;
+    }
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
 /// Result of [`GitHubClient::fetch_readme_text`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReadmeText {
@@ -771,6 +807,8 @@ pub fn parse_repos_meta(
         #[serde(default, rename = "type")]
         kind: Option<String>,
         message: String,
+        #[serde(default)]
+        path: Vec<serde_json::Value>,
     }
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -820,35 +858,65 @@ pub fn parse_repos_meta(
             message,
         });
     };
-    Ok(repos
+    // Only GitHub's own verdict makes a repository "missing" (the caller
+    // caches that and does not ask again until a full refresh). Any other
+    // error on an alias, or a node that does not parse, fails the batch so
+    // the lookup is retried instead (PR #7 review).
+    let mut missing_aliases = std::collections::HashSet::new();
+    for e in &resp.errors {
+        let missing = matches!(e.kind.as_deref(), Some("NOT_FOUND" | "FORBIDDEN"));
+        if !missing {
+            let message: String = e.message.chars().take(200).collect();
+            return Err(GitHubError::Api {
+                status: 200,
+                message,
+            });
+        }
+        if let Some(alias) = e.path.first().and_then(|p| p.as_str()) {
+            missing_aliases.insert(alias.to_string());
+        }
+    }
+    repos
         .iter()
         .enumerate()
         .map(|(k, (slot, _))| {
-            let meta = data
-                .get(&format!("r{k}"))
-                .filter(|v| !v.is_null())
-                .and_then(|v| serde_json::from_value::<Node>(v.clone()).ok())
-                .map(|n| RepoMeta {
-                    name_with_owner: n.name_with_owner,
-                    database_id: n.database_id.unwrap_or(0),
-                    stargazer_count: n.stargazer_count,
-                    description: n.description,
-                    language: n.primary_language.map(|l| l.name),
-                    topics: n
-                        .repository_topics
-                        .nodes
-                        .into_iter()
-                        .map(|t| t.topic.name)
-                        .collect(),
-                    pushed_at: n.pushed_at,
-                    updated_at: n.updated_at,
-                    archived: n.is_archived,
-                    fork: n.is_fork,
-                    url: n.url,
-                });
-            (*slot, meta)
+            let alias = format!("r{k}");
+            let node = match data.get(&alias) {
+                // Missing only on GitHub's word for this very alias; a null
+                // or absent alias without one is an incomplete response
+                // (agy review of PR #8).
+                Some(serde_json::Value::Null) if missing_aliases.contains(&alias) => {
+                    return Ok((*slot, None));
+                }
+                None | Some(serde_json::Value::Null) => {
+                    return Err(GitHubError::Parse(format!(
+                        "repository {alias}: no data and no not-found error"
+                    )));
+                }
+                Some(v) => serde_json::from_value::<Node>(v.clone())
+                    .map_err(|e| GitHubError::Parse(format!("repository r{k}: {e}")))?,
+            };
+            let meta = Some(node).map(|n| RepoMeta {
+                name_with_owner: n.name_with_owner,
+                database_id: n.database_id.unwrap_or(0),
+                stargazer_count: n.stargazer_count,
+                description: n.description,
+                language: n.primary_language.map(|l| l.name),
+                topics: n
+                    .repository_topics
+                    .nodes
+                    .into_iter()
+                    .map(|t| t.topic.name)
+                    .collect(),
+                pushed_at: n.pushed_at,
+                updated_at: n.updated_at,
+                archived: n.is_archived,
+                fork: n.is_fork,
+                url: n.url,
+            });
+            Ok((*slot, meta))
         })
-        .collect())
+        .collect()
 }
 
 /// One parsed GraphQL page.
@@ -1148,6 +1216,25 @@ mod tests {
     }
 
     #[test]
+    fn utf8_prefix_drops_only_a_truncated_last_character() {
+        let s = "aé€😀".as_bytes();
+        for cut in 0..=s.len() {
+            let t = utf8_prefix(&s[..cut]);
+            assert!(!t.contains('\u{FFFD}'), "cut {cut}: {t:?}");
+            assert!("aé€😀".starts_with(&t));
+        }
+        assert_eq!(
+            utf8_prefix(b"a\xffb"),
+            "a\u{FFFD}b",
+            "invalid bytes inside are kept as before"
+        );
+        // An earlier invalid byte must not stop the trailing cut (agy review).
+        let mut mixed = b"x\xffy".to_vec();
+        mixed.extend_from_slice(&"€".as_bytes()[..2]);
+        assert_eq!(utf8_prefix(&mixed), "x\u{FFFD}y");
+    }
+
+    #[test]
     fn repos_meta_query_uses_variables_not_interpolation() {
         let repos = [(0, ("rust-lang", "rust")), (3, ("o", "r\"} evil"))];
         let (query, vars) = repos_meta_query(&repos);
@@ -1187,6 +1274,49 @@ mod tests {
             (7125, Some("Rust"))
         );
         assert_eq!(got[1], (2, None), "missing repo keeps its slot");
+    }
+
+    #[test]
+    fn repos_meta_only_not_found_or_forbidden_means_missing() {
+        // PR #7 review (Codex): any other error used to be cached as a
+        // missing repository and never retried.
+        let repos = [(0, ("o", "r")), (1, ("o", "s"))];
+        let node = r#"{"nameWithOwner":"o/r","databaseId":1,"stargazerCount":5,
+            "description":null,"url":"https://github.com/o/r","primaryLanguage":null,
+            "pushedAt":null,"updatedAt":"2026-11-01T00:00:00Z","isArchived":false,"isFork":false}"#;
+        let forbidden = format!(
+            r#"{{"data":{{"r0":{node},"r1":null}},"errors":[{{"type":"FORBIDDEN","path":["r1"],"message":"SAML"}}]}}"#
+        );
+        let ok = parse_repos_meta(&forbidden, &repos).unwrap();
+        assert_eq!(ok[1], (1, None), "inaccessible counts as missing");
+
+        let transient = format!(
+            r#"{{"data":{{"r0":{node},"r1":null}},"errors":[{{"type":"SERVICE_UNAVAILABLE","path":["r1"],"message":"try later"}}]}}"#
+        );
+        assert!(matches!(
+            parse_repos_meta(&transient, &repos),
+            Err(GitHubError::Api { .. })
+        ));
+        let untyped = format!(
+            r#"{{"data":{{"r0":{node},"r1":null}},"errors":[{{"message":"Something went wrong"}}]}}"#
+        );
+        assert!(parse_repos_meta(&untyped, &repos).is_err());
+
+        // agy review of PR #8: a null or absent alias without GitHub's own
+        // not-found error is an incomplete response, not a missing repo.
+        let unexplained = format!(r#"{{"data":{{"r0":{node},"r1":null}}}}"#);
+        assert!(matches!(
+            parse_repos_meta(&unexplained, &repos),
+            Err(GitHubError::Parse(_))
+        ));
+        let absent = format!(r#"{{"data":{{"r0":{node}}}}}"#);
+        assert!(parse_repos_meta(&absent, &repos).is_err());
+
+        let malformed = r#"{"data":{"r0":{"nameWithOwner":7},"r1":null}}"#;
+        assert!(matches!(
+            parse_repos_meta(malformed, &repos),
+            Err(GitHubError::Parse(_))
+        ));
     }
 
     #[test]

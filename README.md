@@ -50,7 +50,7 @@ searchable, and one keypress from your browser.
 
 | An awesome list (awesome-nodejs) with details | The awesome list picker |
 |---|---|
-| ![The Awesome row with the chosen list "Node.js" in italics beneath it; the repo pane lists awesome-nodejs entries with star counts and their section in the list, and the details pane shows the section, whether the repo is in your stars, and its README](assets/screenshot-awesome.png) | ![The Awesome lists picker: the Platforms section with Node.js and its Cross-Platform sub-list, then iOS, Android, the Linux group and more](assets/screenshot-awesome-picker.png) |
+| ![The Awesome row with the chosen list "Node.js" in italics beneath it; the repo pane lists awesome-nodejs entries with star counts and their section in the list, and the details pane shows the section, whether the repo is in your stars, and its README](assets/screenshot-awesome.png) | ![The Awesome lists picker as a collapsible tree: Platforms collapsed, Programming Languages open with Python expanded to show Python (all) and its sub-lists such as Asyncio and Typing, and other languages with their sub-list counts](assets/screenshot-awesome-picker.png) |
 
 ## Categories
 
@@ -95,23 +95,26 @@ and put `stargazer` on your `PATH`:
 ```bash
 # Linux
 sha256sum -c --ignore-missing SHA256SUMS
-tar -xzf stargazer-v0.2.1-x86_64-unknown-linux-gnu.tar.gz
-install -m 755 stargazer-v0.2.1-x86_64-unknown-linux-gnu/stargazer ~/.local/bin/
+tar -xzf stargazer-v0.3.1-x86_64-unknown-linux-gnu.tar.gz
+install -m 755 stargazer-v0.3.1-x86_64-unknown-linux-gnu/stargazer ~/.local/bin/
 
 # macOS
 grep aarch64-apple-darwin SHA256SUMS | shasum -a 256 -c
-tar -xzf stargazer-v0.2.1-aarch64-apple-darwin.tar.gz
+tar -xzf stargazer-v0.3.1-aarch64-apple-darwin.tar.gz
 ```
 
-On Windows, compare `Get-FileHash stargazer-v0.2.1-x86_64-pc-windows-msvc.zip` with the line in
+On Windows, compare `Get-FileHash stargazer-v0.3.1-x86_64-pc-windows-msvc.zip` with the line in
 `SHA256SUMS`, then extract the zip.
 
 > **macOS:** the binaries are not yet signed or notarized
 > ([#3](https://github.com/doublegate/StarGazer/issues/3)), so Gatekeeper blocks a
 > browser-downloaded copy with "cannot be verified". After checking the checksum, clear the
-> quarantine flag with `xattr -d com.apple.quarantine stargazer`, or build from source
-> (below). On Windows, SmartScreen may warn on first run; choose "More info", then
-> "Run anyway".
+> quarantine flag on the binary where it is, for example
+> `xattr -d com.apple.quarantine ~/.local/bin/stargazer` (`xattr` needs the file's path, it
+> does not search `PATH`), or build from source (below).
+>
+> **Windows:** SmartScreen may warn on first run; choose "More info", then "Run anyway", or
+> clear the download mark first with `Unblock-File .\stargazer.exe` in PowerShell.
 
 ### Build from source
 
@@ -119,7 +122,7 @@ Requires Rust 1.88 or newer ([rustup.rs](https://rustup.rs)). Either let Cargo b
 install it into `~/.cargo/bin`:
 
 ```bash
-cargo install --locked --git https://github.com/doublegate/StarGazer --tag v0.2.1
+cargo install --locked --git https://github.com/doublegate/StarGazer --tag v0.3.1
 ```
 
 or build a checkout and copy the binary wherever you keep tools:
@@ -190,8 +193,14 @@ stargazer export --sync                  # sync first
 
 The **Awesome** row, pinned second in the sidebar, browses the lists indexed by
 [sindresorhus/awesome](https://github.com/sindresorhus/awesome). With it selected, press
-`Enter` (or click it) to open the list picker: sections, lists and sub-lists, in the index's
-own order. Press `/` to filter the picker by name or description, then `Enter` to choose.
+`Enter` (or click it) to open the list picker, a collapsible tree in the index's own order.
+It opens with only the sections (Platforms, Programming Languages, ...); `Enter`, `→` or a
+click on the selected row expands one to show its lists, and a list with sub-lists expands the same way. Inside it,
+the first row opens the list itself (`Python (all)`), followed by its sub-lists (Asyncio,
+Typing, ...). `←` collapses, or moves to the parent row. Press `/` to filter by name or
+description (every match is shown with its path; `Esc` clears the filter and returns to the
+tree as you left it). The picker always opens with every section collapsed, the cursor on the
+section that holds the chosen list.
 
 The chosen list appears under Awesome as `→ Node.js › Cross-Platform` (only while Awesome is
 selected), and its entries fill the repo pane. They work like your stars: search, the language,
@@ -225,7 +234,7 @@ reopen the list a minute later.
 | `PgUp` / `PgDn`, `Ctrl+U` / `Ctrl+D` | Page / half page through the repo list (README when details are focused) |
 | `g` / `Home`, `G` / `End` | Jump to the top / bottom of the repo list |
 | `Enter` / `o` | Open selected repo in browser |
-| `Enter` on Awesome | Choose an awesome list (`/` filters the picker) |
+| `Enter` on Awesome | Open the awesome list picker (`Enter`/`→` expand, `←` collapse, `/` filters) |
 | `/` | Search (`Enter` opens the selected match, `Esc` clears) |
 | `Esc` | Clear search, or close the details pane |
 | `d` | Toggle details + README pane |
@@ -240,7 +249,9 @@ reopen the list a minute later.
 | `q` / `Ctrl+C` | Quit |
 
 Mouse: the wheel scrolls the pane under the pointer; clicking selects, clicking the selected
-repo again opens it.
+repo again opens it. Pop-ups (the Awesome picker, the language picker, the unstar question)
+work the same way: the wheel moves the selection, a click selects and a second click
+activates; click `y unstar` or `n cancel` to answer; a click outside a pop-up closes it.
 
 ## Sort modes
 
@@ -260,7 +271,8 @@ The Categories pane (focus it with `←`) sorts independently of the repo list:
 5. **Starred ↓**: the category you starred something in most recently first
 
 All, Awesome and your own repos always stay at the top, in that order. The pane title shows
-the category sort unless it is the default.
+the category sort unless it is the default, and the title bar at the top shows the sort of the
+pane that has focus: `[Categories: Name A→Z]` with the sidebar focused, `[Stars ↓]` otherwise.
 
 ## Search
 
