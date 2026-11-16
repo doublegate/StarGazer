@@ -67,6 +67,99 @@ impl SortMode {
     }
 }
 
+/// Sort order of the Categories pane, independent of the repo list's
+/// [`SortMode`]. The pinned rows (All, Awesome, "<user>'s repos") never move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, clap::ValueEnum)]
+pub enum CategorySort {
+    /// The fixed category order (pre-v0.3 behaviour).
+    #[default]
+    #[serde(rename = "default")]
+    #[value(name = "default")]
+    Default,
+    /// Categories holding the most starred repos first.
+    #[serde(rename = "stars")]
+    #[value(name = "stars")]
+    Stars,
+    /// Category with the most recently pushed repo first.
+    #[serde(rename = "recent")]
+    #[value(name = "recent")]
+    RecentlyActive,
+    /// Category name A-Z.
+    #[serde(rename = "name")]
+    #[value(name = "name")]
+    Name,
+    /// Category you starred something in most recently first.
+    #[serde(rename = "starred")]
+    #[value(name = "starred")]
+    StarredAt,
+}
+
+impl CategorySort {
+    pub fn label(self, ascii: bool) -> &'static str {
+        match (self, ascii) {
+            (Self::Default, _) => "Default order",
+            (Self::Stars, false) => "Stars ↓",
+            (Self::Stars, true) => "Stars v",
+            (Self::RecentlyActive, _) => "Recently Active",
+            (Self::Name, false) => "Name A→Z",
+            (Self::Name, true) => "Name A-Z",
+            (Self::StarredAt, false) => "Starred ↓",
+            (Self::StarredAt, true) => "Starred v",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Default => Self::Stars,
+            Self::Stars => Self::RecentlyActive,
+            Self::RecentlyActive => Self::Name,
+            Self::Name => Self::StarredAt,
+            Self::StarredAt => Self::Default,
+        }
+    }
+}
+
+/// Order `cats` (name, count) by `mode` using aggregates over `repos`.
+/// `Default` keeps the incoming order (the fixed category order); every
+/// other mode falls back to that order on ties.
+pub fn sort_categories(cats: &mut [(String, usize)], repos: &[StarredRepo], mode: CategorySort) {
+    use chrono::{DateTime, Utc};
+    if mode == CategorySort::Default {
+        return;
+    }
+    let mut pushed: HashMap<&str, DateTime<Utc>> = HashMap::new();
+    let mut starred: HashMap<&str, DateTime<Utc>> = HashMap::new();
+    for r in repos {
+        let p = r.pushed_at.unwrap_or(r.updated_at);
+        pushed
+            .entry(r.category.as_str())
+            .and_modify(|t| *t = (*t).max(p))
+            .or_insert(p);
+        if let Some(s) = r.starred_at {
+            starred
+                .entry(r.category.as_str())
+                .and_modify(|t| *t = (*t).max(s))
+                .or_insert(s);
+        }
+    }
+    let base: HashMap<String, usize> = cats
+        .iter()
+        .enumerate()
+        .map(|(i, (c, _))| (c.clone(), i))
+        .collect();
+    let rank = |c: &str| base.get(c).copied().unwrap_or(usize::MAX);
+    cats.sort_by(|(a, an), (b, bn)| {
+        let primary = match mode {
+            CategorySort::Default => std::cmp::Ordering::Equal,
+            CategorySort::Stars => bn.cmp(an),
+            CategorySort::RecentlyActive => pushed.get(b.as_str()).cmp(&pushed.get(a.as_str())),
+            CategorySort::Name => a.to_lowercase().cmp(&b.to_lowercase()),
+            CategorySort::StarredAt => starred.get(b.as_str()).cmp(&starred.get(a.as_str())),
+        };
+        primary.then_with(|| rank(a).cmp(&rank(b)))
+    });
+}
+
 /// Sort `repos` in place by `mode`; ties broken by name for stable output.
 pub fn sort_repos(repos: &mut [StarredRepo], mode: SortMode) {
     repos.sort_by(|a, b| compare_repos(a, b, mode));
@@ -227,7 +320,10 @@ pub struct App {
     pub language: Option<String>,
     pub hide_archived: bool,
     pub hide_forks: bool,
+    /// Repo-list sort mode.
     pub sort: SortMode,
+    /// Categories-pane sort mode (independent of `sort`).
+    pub cat_sort: CategorySort,
 
     pub focus: Focus,
     pub overlay: Overlay,
@@ -269,6 +365,7 @@ impl App {
             hide_archived: false,
             hide_forks: false,
             sort,
+            cat_sort: CategorySort::Default,
             focus: Focus::Repos,
             overlay: Overlay::None,
             show_detail: false,
@@ -354,7 +451,10 @@ impl App {
         if own > 0 {
             cats.push((self.own_label(), own));
         }
-        cats.extend(category_counts(&filtered));
+        // Pinned rows above stay put; only the real categories are sorted.
+        let mut rest = category_counts(&filtered);
+        sort_categories(&mut rest, &filtered, self.cat_sort);
+        cats.extend(rest);
         self.categories = cats;
         self.cat_sel = self
             .categories
@@ -579,6 +679,21 @@ impl App {
         self.set_sort(self.sort.next());
     }
 
+    pub fn cycle_cat_sort(&mut self) {
+        self.set_cat_sort(self.cat_sort.next());
+    }
+
+    /// Re-sort the Categories pane, keeping the selected category selected.
+    pub fn set_cat_sort(&mut self, sort: CategorySort) {
+        self.cat_sort = sort;
+        let keep = self.selected_category().to_string();
+        self.rebuild_categories(&keep);
+        self.set_status(
+            Level::Info,
+            format!("Category sort: {}", sort.label(self.ascii)),
+        );
+    }
+
     pub fn set_sort(&mut self, sort: SortMode) {
         let keep = self.selected_repo().map(|r| r.id);
         self.sort = sort;
@@ -775,7 +890,11 @@ impl App {
             }
             KeyCode::Char('y') => self.copy_selected(false),
             KeyCode::Char('Y') => self.copy_selected(true),
-            KeyCode::Char('s') | KeyCode::Char('S') => self.cycle_sort(),
+            // Each pane has its own sort; `s` cycles the focused one.
+            KeyCode::Char('s') | KeyCode::Char('S') => match self.focus {
+                Focus::Categories => self.cycle_cat_sort(),
+                _ => self.cycle_sort(),
+            },
             KeyCode::Char('l') => self.open_language_picker(),
             KeyCode::Char('a') => {
                 self.hide_archived = !self.hide_archived;
@@ -1140,6 +1259,11 @@ mod tests {
             vec![Effect::Open("https://github.com/o/beta".into())],
             "Enter opens the selected repo even with the sidebar focused"
         );
+        // v0.3: uppercase S still works, and like `s` it sorts the focused
+        // pane, which here is the sidebar.
+        a.handle_key(ch('S'));
+        assert_eq!(a.cat_sort, CategorySort::Stars);
+        a.handle_key(key(KeyCode::Right));
         a.handle_key(ch('S'));
         assert_eq!(a.sort, SortMode::RecentlyActive);
         a.handle_key(ch('R'));
@@ -1462,6 +1586,98 @@ mod tests {
         a.handle_key(key(KeyCode::Down));
         assert_eq!(a.selected_category(), "Security");
         assert!(a.visible.iter().any(|&i| a.repos[i].full_name == "Me/tool"));
+    }
+
+    /// Repos spread over three categories with distinct counts and dates.
+    fn sortable_app() -> App {
+        use chrono::{TimeZone, Utc};
+        let t = |d: u32| Some(Utc.with_ymd_and_hms(2026, 1, d, 0, 0, 0).unwrap());
+        let mk = |id, owner: &str, cat: &str, pushed: u32, starred: u32| StarredRepo {
+            id,
+            full_name: format!("{owner}/r{id}"),
+            name: format!("r{id}"),
+            category: cat.into(),
+            pushed_at: t(pushed),
+            starred_at: t(starred),
+            ..StarredRepo::test_default()
+        };
+        let cache = StarCache {
+            repos: vec![
+                mk(1, "me", "Rust", 1, 1),
+                mk(2, "x", "Rust", 2, 2),
+                mk(3, "x", "Rust", 3, 3),
+                mk(4, "x", "Databases", 20, 4),
+                mk(5, "x", "AI / ML", 5, 25),
+                mk(6, "x", "AI / ML", 6, 6),
+            ],
+            ..Default::default()
+        };
+        App::new("me", cache, SortMode::Stars, false)
+    }
+
+    fn cat_names(a: &App) -> Vec<&str> {
+        a.categories.iter().map(|(c, _)| c.as_str()).collect()
+    }
+
+    #[test]
+    fn category_sorts_keep_pinned_rows_on_top() {
+        let mut a = sortable_app();
+        // Default: the fixed category order.
+        assert_eq!(
+            cat_names(&a),
+            ["All", "me's repos", "Rust", "AI / ML", "Databases"]
+        );
+        a.set_cat_sort(CategorySort::Stars); // by repo count: Rust 3, AI 2, DB 1
+        assert_eq!(
+            cat_names(&a),
+            ["All", "me's repos", "Rust", "AI / ML", "Databases"]
+        );
+        a.set_cat_sort(CategorySort::RecentlyActive); // DB pushed 20th, AI 6th, Rust 3rd
+        assert_eq!(
+            cat_names(&a),
+            ["All", "me's repos", "Databases", "AI / ML", "Rust"]
+        );
+        a.set_cat_sort(CategorySort::Name);
+        assert_eq!(
+            cat_names(&a),
+            ["All", "me's repos", "AI / ML", "Databases", "Rust"]
+        );
+        a.set_cat_sort(CategorySort::StarredAt); // AI starred 25th, DB 4th, Rust 3rd
+        assert_eq!(
+            cat_names(&a),
+            ["All", "me's repos", "AI / ML", "Databases", "Rust"]
+        );
+    }
+
+    #[test]
+    fn s_cycles_the_focused_panes_sort_only() {
+        let mut a = sortable_app();
+        a.handle_key(key(KeyCode::Left)); // focus Categories
+        a.handle_key(ch('s'));
+        assert_eq!(a.cat_sort, CategorySort::Stars);
+        assert_eq!(a.sort, SortMode::Stars, "repo sort untouched");
+        a.handle_key(key(KeyCode::Right)); // focus Repos
+        a.handle_key(ch('s'));
+        assert_eq!(a.sort, SortMode::RecentlyActive);
+        assert_eq!(a.cat_sort, CategorySort::Stars, "category sort untouched");
+        // The cycle returns to the default order after the four modes.
+        a.handle_key(key(KeyCode::Left));
+        for _ in 0..4 {
+            a.handle_key(ch('s'));
+        }
+        assert_eq!(a.cat_sort, CategorySort::Default);
+    }
+
+    #[test]
+    fn category_resort_keeps_the_selected_category() {
+        let mut a = sortable_app();
+        a.handle_key(key(KeyCode::Left));
+        a.handle_key(key(KeyCode::Down));
+        a.handle_key(key(KeyCode::Down)); // Rust
+        assert_eq!(a.selected_category(), "Rust");
+        a.set_cat_sort(CategorySort::Name);
+        assert_eq!(a.selected_category(), "Rust");
+        assert_eq!(names(&a).len(), 3);
     }
 
     #[test]

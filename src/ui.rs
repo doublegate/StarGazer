@@ -14,7 +14,7 @@
 //! (see [`crate::text`]) and every line is truncated to its pane's inner width
 //! by display columns, so nothing ever spills into a border.
 
-use crate::app::{App, Focus, Level, Overlay, REPO_ITEM_HEIGHT, Readme};
+use crate::app::{App, CategorySort, Focus, Level, Overlay, REPO_ITEM_HEIGHT, Readme};
 use crate::cache::StarredRepo;
 use crate::text::{sanitize, truncate_width, width};
 use crate::theme::{Glyphs, Theme};
@@ -195,7 +195,23 @@ impl Ui {
 
     fn render_categories(&self, f: &mut Frame, app: &mut App, area: Rect) {
         let focused = app.focus == Focus::Categories;
-        let block = self.block(" Categories ".into(), focused);
+        let title = if app.cat_sort == CategorySort::Default {
+            " Categories ".to_string()
+        } else {
+            format!(
+                " Categories {} {} ",
+                self.glyphs.sep,
+                app.cat_sort.label(self.glyphs.ascii)
+            )
+        };
+        let block = self.block(
+            truncate_width(
+                &title,
+                (area.width as usize).saturating_sub(4),
+                self.glyphs.ellipsis,
+            ),
+            focused,
+        );
         let inner = block.inner(area);
         let max = (inner.width as usize).saturating_sub(width(self.glyphs.pointer));
 
@@ -600,7 +616,7 @@ impl Ui {
             ("Enter / o", "open repo in browser"),
             ("d", "toggle details + README pane"),
             ("/", "fuzzy search (Enter opens match, Esc clears)"),
-            ("s", "cycle sort mode"),
+            ("s", "cycle sort of the focused pane"),
             ("l", "filter by language"),
             ("a / f", "hide / show archived, forks"),
             ("y / Y", "copy URL / git clone command"),
