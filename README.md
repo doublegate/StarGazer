@@ -65,6 +65,13 @@ Download the archive for your platform from the
 aarch64, macOS Intel and Apple Silicon, Windows x86_64), check it against `SHA256SUMS`, and
 put `stargazer` on your `PATH`.
 
+> **macOS:** the binaries are not yet signed or notarized
+> ([#3](https://github.com/doublegate/StarGazer/issues/3)), so Gatekeeper blocks a
+> browser-downloaded copy with "cannot be verified". After checking the checksum, clear the
+> quarantine flag with `xattr -d com.apple.quarantine stargazer`, or build from source
+> (below). On Windows, SmartScreen may warn on first run; choose "More info", then
+> "Run anyway".
+
 ### Build from source
 
 Requires Rust 1.88 or newer ([rustup.rs](https://rustup.rs)).
