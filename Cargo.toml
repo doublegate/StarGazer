@@ -1,6 +1,6 @@
 [package]
 name = "stargazer"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "TUI browser for your GitHub starred repositories: navigate, search, filter, and open stars instantly"

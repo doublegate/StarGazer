@@ -125,6 +125,12 @@ async fn run() -> Result<()> {
         Some(Command::Paths) => {
             println!("config: {}", config_path.display());
             println!("cache:  {}", cache_path.display());
+            println!(
+                "awesome: {}",
+                stargazer::awesome::Store::beside(&cache_path)
+                    .dir()
+                    .display()
+            );
             Ok(())
         }
         Some(Command::Export {

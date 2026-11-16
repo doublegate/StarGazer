@@ -6,6 +6,43 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-16
+
+### Added
+
+- **Awesome lists.** A new **Awesome** row, pinned between All and your own repos, browses
+  the lists indexed by [sindresorhus/awesome](https://github.com/sindresorhus/awesome).
+  `Enter` (or a click) on it opens a picker of sections, lists and sub-lists; `/` filters
+  it. The chosen list is shown under Awesome as `→ Node.js › Cross-Platform` while Awesome
+  is selected, and its entries fill the repo pane with star counts, search, filters,
+  sorting, the details pane and README previews, like your stars.
+  - Each row shows the section of the list it came from; the starred-date sort reads
+    **List order** there and keeps the list's own order.
+  - Entries that are not GitHub repositories are included without a star count (`⭐ -`)
+    or README; `Enter` opens their link (http and https only).
+  - Repos already in your stars are marked `starred`, and only those can be unstarred
+    from a list.
+  - The index syncs at startup and on every full refresh. A list is fetched when first
+    opened and then cached; it is fetched again after `stale_days` or on `r`. The last
+    chosen list is restored at startup, from the cache, without waiting for the network.
+  - Star counts need a token. GitHub allows roughly 2,000 repository lookups a minute,
+    so a big list (awesome-rust, ~1,800 repos) takes 15-20 seconds; repos you have
+    starred cost no lookup, and if the limit is reached the counts already fetched are
+    kept and the rest load the next time you open the list.
+  - Awesome data is stored next to the star cache in `awesome/`, shown by `stargazer paths`.
+- **Category sorting.** `s` now sorts whichever pane has focus, and the Categories pane
+  has its own sort, independent of the repo list: Default order (the fixed category
+  order, and still the default), Stars (most repos first), Recently Active, Name, and
+  Starred. All, Awesome and your own repos always stay on top. Set it with
+  `category_sort` in `config.toml` or `--category-sort`.
+
+### Changed
+
+- `s` / `S` with the sidebar focused now cycles the category sort; previously it cycled the
+  repo-list sort from any pane. With the repo list or details focused it works as before.
+- `Enter` on the Awesome row opens the list picker; on every other row it still opens the
+  selected repo, as in v0.1.
+
 ## [0.2.1] - 2026-11-16
 
 ### Changed
@@ -144,7 +181,8 @@ All notable changes to this project are documented here. The format follows
   open-in-browser.
 - 2026-10-26: dependency update `thiserror` 1 to 2 (#1).
 
-[Unreleased]: https://github.com/doublegate/StarGazer/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/doublegate/StarGazer/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/doublegate/StarGazer/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/doublegate/StarGazer/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/doublegate/StarGazer/compare/a874e20...v0.2.0
 [0.1.0]: https://github.com/doublegate/StarGazer/commit/a874e20
