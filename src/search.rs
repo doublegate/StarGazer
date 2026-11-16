@@ -11,7 +11,7 @@
 //! | match (term vs one word)                  | quality |
 //! |-------------------------------------------|---------|
 //! | exact word                                | 10      |
-//! | word starts with the term (2+ chars)      | 7       |
+//! | word starts with the term                 | 7       |
 //! | term inside the word (4+ chars)           | 5       |
 //! | typo: 1 edit (5+ chars), 2 edits (8+)     | 4       |
 //! | fuzzy: in-order letters within the word   | 2       |
@@ -114,11 +114,12 @@ pub struct Query {
 
 impl Query {
     pub fn parse(q: &str) -> Self {
-        // A repeated word counts once ("rust rust" is "rust").
-        let mut terms = words(q);
+        // The phrase keeps every word ("end to end"); for scoring a
+        // repeated word counts once ("rust rust" is "rust").
+        let all = words(q);
+        let phrase = (all.len() > 1).then(|| phrase_text(&all));
         let mut seen = std::collections::HashSet::new();
-        terms.retain(|t| seen.insert(t.clone()));
-        let phrase = (terms.len() > 1).then(|| phrase_text(&terms));
+        let terms: Vec<String> = all.into_iter().filter(|t| seen.insert(t.clone())).collect();
         Self { terms, phrase }
     }
 
@@ -328,6 +329,10 @@ mod tests {
         ];
         assert_eq!(rank("r", &repos), ["o/ratatui"], "one letter is a prefix");
         assert_eq!(score("rust rust", &repos[0]), score("rust", &repos[0]));
+        // ...but the phrase keeps repeated words (agy review of PR #8).
+        let e2e = repo("o/tests", "Run end to end tests in CI", None, &[]);
+        let other = repo("o/other", "the end; to be continued", None, &[]);
+        assert!(score("end to end", &e2e) > score("end to end", &other));
         assert!(Query::parse("++ .. --").is_empty(), "punctuation only");
     }
 

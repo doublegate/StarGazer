@@ -160,7 +160,6 @@ async fn run() -> Result<()> {
                 };
                 // For an empty cache: the account a plain launch would open
                 // (configured user, else the token's owner).
-                // For an empty cache: the account a plain launch would open.
                 // Only an explicit --user / STARGAZER_USER can differ from
                 // it (otherwise `user` already is that account), so only
                 // then is it looked up.
@@ -172,7 +171,12 @@ async fn run() -> Result<()> {
                 } else {
                     None
                 };
-                if export_uses_scratch_cache(&user, &cache, default_user.as_deref()) {
+                // An explicit account whose default could not be resolved
+                // (anonymous run, lookup failed) must not fill an empty cache
+                // either: the next plain launch would open it.
+                let unresolved =
+                    cache.username.is_empty() && cli.user.is_some() && default_user.is_none();
+                if unresolved || export_uses_scratch_cache(&user, &cache, default_user.as_deref()) {
                     // Another account: sync from scratch into a private
                     // temporary directory so the user's own cache is left
                     // alone. create_dir fails if the name exists, so nothing

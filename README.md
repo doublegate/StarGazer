@@ -195,7 +195,7 @@ The **Awesome** row, pinned second in the sidebar, browses the lists indexed by
 [sindresorhus/awesome](https://github.com/sindresorhus/awesome). With it selected, press
 `Enter` (or click it) to open the list picker, a collapsible tree in the index's own order.
 It opens with only the sections (Platforms, Programming Languages, ...); `Enter`, `→` or a
-click expands one to show its lists, and a list with sub-lists expands the same way. Inside it,
+click on the selected row expands one to show its lists, and a list with sub-lists expands the same way. Inside it,
 the first row opens the list itself (`Python (all)`), followed by its sub-lists (Asyncio,
 Typing, ...). `←` collapses, or moves to the parent row. Press `/` to filter by name or
 description (every match is shown with its path; `Esc` clears the filter and returns to the

@@ -14,7 +14,7 @@ All notable changes to this project are documented here. The format follows
   `[Categories: Name A→Z]`, otherwise the repo list's sort as before. In v0.3.0 it always
   showed the repo list's sort, even after sorting the sidebar.
 - **The Awesome list picker is a collapsible tree.** It opens with only the sections; `Enter`,
-  `→` or a click expands a section into its lists and a list into its sub-lists, with the list
+  `→` or a click on the selected row expands a section into its lists and a list into its sub-lists, with the list
   itself first (`Python (all)`). `←` collapses or moves to the parent. Filtering with `/` shows
   every match with its path, and clearing it returns to the tree as you left it. It always opens
   with every section collapsed, the cursor on the section that holds the chosen list.
