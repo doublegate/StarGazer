@@ -61,13 +61,31 @@ pub fn needs_full(cache: &StarCache, user: &str, mode: SyncMode, stale_days: u32
 }
 
 /// Recompute categories when the rules changed since the cache was written.
-pub fn refresh_categories(cache: &mut StarCache) {
+/// Returns how many repos ended up in a different category.
+pub fn refresh_categories(cache: &mut StarCache) -> usize {
+    let mut changed = 0;
     if cache.rules_version != RULES_VERSION {
         for r in &mut cache.repos {
-            r.category = categorize(r);
+            let cat = categorize(r);
+            if cat != r.category {
+                changed += 1;
+                r.category = cat;
+            }
         }
         cache.rules_version = RULES_VERSION;
     }
+    changed
+}
+
+/// One-time status message shown after an older cache format was upgraded.
+pub fn upgrade_notice(from_version: u32, changed: usize, total: usize) -> String {
+    let from = match from_version {
+        0 | 1 => "v0.1".to_string(),
+        v => format!("format {v}"),
+    };
+    format!(
+        "Upgraded {from} cache: {changed} of {total} repos changed category under the new rules (see CHANGELOG)"
+    )
 }
 
 /// Run one sync for `user`, starting from `cache`, saving to `path`.
@@ -144,7 +162,7 @@ pub async fn sync(
     if result.etag.is_some() {
         cache.rest_etag = result.etag;
     }
-    refresh_categories(&mut cache);
+    let _ = refresh_categories(&mut cache);
     cache.fetched_at = Some(Utc::now());
 
     if let Err(e) = cache.save_to(path) {
@@ -208,8 +226,18 @@ mod tests {
         c.repos[0].language = Some("Rust".into());
         c.repos[0].category = "Other".into();
         c.rules_version = 1;
-        refresh_categories(&mut c);
+        assert_eq!(refresh_categories(&mut c), 1);
         assert_eq!(c.repos[0].category, "Rust");
         assert_eq!(c.rules_version, RULES_VERSION);
+        assert_eq!(refresh_categories(&mut c), 0, "no-op once current");
+    }
+
+    #[test]
+    fn upgrade_notice_text() {
+        assert_eq!(
+            upgrade_notice(0, 178, 645),
+            "Upgraded v0.1 cache: 178 of 645 repos changed category under the new rules (see CHANGELOG)"
+        );
+        assert!(upgrade_notice(2, 0, 1).starts_with("Upgraded format 2 cache"));
     }
 }

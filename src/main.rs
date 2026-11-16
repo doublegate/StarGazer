@@ -18,14 +18,14 @@
 
 use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
-use stargazer::app::{App, SortMode};
+use stargazer::app::{App, Level, SortMode};
 use stargazer::cache::{Loaded, StarCache};
 use stargazer::config::{Config, ThemeName, env_flag};
 use stargazer::export::{Format, export};
 use stargazer::github::{
     DEFAULT_API_URL, FetchEvent, GitHubClient, resolve_token, validate_username,
 };
-use stargazer::sync::{SyncMode, refresh_categories, same_user, sync};
+use stargazer::sync::{SyncMode, refresh_categories, same_user, sync, upgrade_notice};
 use stargazer::theme::{Glyphs, Theme};
 use stargazer::tui::{self, Context};
 use stargazer::ui::Ui;
@@ -156,7 +156,7 @@ async fn run() -> Result<()> {
                 .await
                 .map_err(|f| f.error)?;
             }
-            refresh_categories(&mut cache);
+            let _ = refresh_categories(&mut cache);
             match output {
                 Some(path) => {
                     let mut file = std::fs::File::create(&path)
@@ -210,16 +210,31 @@ async fn run() -> Result<()> {
             let (client, user) =
                 connect(cli.user.as_deref(), &config, Some(&loaded.cache.username)).await?;
             let mut cache = loaded.cache;
-            if !same_user(&cache.username, &user) {
+            let own_cache = same_user(&cache.username, &user);
+            if !own_cache {
                 // Never show another account's stars while the new list loads.
                 cache = StarCache::default();
             }
-            refresh_categories(&mut cache);
+            let changed = refresh_categories(&mut cache);
+
+            // An older cache format (e.g. v0.1) was upgraded in memory. Save it
+            // in the new format right away so the notice below appears exactly
+            // once, even if the first sync fails. A failed save is harmless:
+            // the next successful sync writes the file anyway.
+            let notice = match loaded.upgraded_from {
+                Some(from) if own_cache && !cache.repos.is_empty() => {
+                    let _ = cache.save_to(&cache_path);
+                    Some(upgrade_notice(from, changed, cache.repos.len()))
+                }
+                _ => None,
+            };
 
             let mut app = App::new(&user, cache, sort, client.has_token());
             app.ascii = ascii;
             if let Some(w) = loaded.warning {
-                app.set_status(stargazer::app::Level::Warn, w);
+                app.set_status(Level::Warn, w);
+            } else if let Some(n) = notice {
+                app.set_status(Level::Notice, n);
             }
             let ctx = Context {
                 client: Arc::new(client),
@@ -252,6 +267,7 @@ fn load_cache(path: &std::path::Path) -> Loaded {
     StarCache::load_from(path).unwrap_or_else(|e| Loaded {
         cache: StarCache::default(),
         warning: Some(format!("could not read cache: {e:#}")),
+        upgraded_from: None,
     })
 }
 

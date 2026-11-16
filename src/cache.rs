@@ -116,6 +116,9 @@ pub struct Loaded {
     pub cache: StarCache,
     /// Set when the file was unreadable and was moved aside.
     pub warning: Option<String>,
+    /// The on-disk schema version when an older format was upgraded in
+    /// memory (0 = v0.1). `None` for current-format or missing files.
+    pub upgraded_from: Option<u32>,
 }
 
 impl StarCache {
@@ -135,6 +138,7 @@ impl StarCache {
                 return Ok(Loaded {
                     cache: Self::default(),
                     warning: None,
+                    upgraded_from: None,
                 });
             }
             Err(e) => return Err(e).with_context(|| format!("reading cache {}", path.display())),
@@ -142,15 +146,18 @@ impl StarCache {
 
         match serde_json::from_str::<Self>(&raw) {
             Ok(mut cache) => {
+                let mut upgraded_from = None;
                 if cache.version < CACHE_VERSION {
                     // v0.1 caches had no completeness flag; a non-empty one was
                     // the product of a finished import.
+                    upgraded_from = Some(cache.version);
                     cache.complete = !cache.repos.is_empty();
                     cache.version = CACHE_VERSION;
                 }
                 Ok(Loaded {
                     cache,
                     warning: None,
+                    upgraded_from,
                 })
             }
             Err(e) => {
@@ -163,6 +170,7 @@ impl StarCache {
                         "cache was unreadable ({e}); moved to {} and rebuilding",
                         bad.display()
                     )),
+                    upgraded_from: None,
                 })
             }
         }
@@ -276,6 +284,7 @@ mod tests {
         cache.save_to(&path).unwrap();
         let loaded = StarCache::load_from(&path).unwrap();
         assert!(loaded.warning.is_none());
+        assert!(loaded.upgraded_from.is_none());
         assert_eq!(loaded.cache, cache);
         let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
             .unwrap()
@@ -301,6 +310,7 @@ mod tests {
         let loaded = StarCache::load_from(&dir.path().join("nope.json")).unwrap();
         assert!(loaded.cache.repos.is_empty());
         assert!(loaded.warning.is_none());
+        assert!(loaded.upgraded_from.is_none());
     }
 
     #[test]
@@ -331,9 +341,15 @@ mod tests {
           }]
         }"#;
         std::fs::write(&path, v01).unwrap();
-        let loaded = StarCache::load_from(&path).unwrap().cache;
+        let result = StarCache::load_from(&path).unwrap();
+        assert_eq!(result.upgraded_from, Some(0), "v0.1 format detected");
+        let loaded = result.cache;
         assert_eq!(loaded.version, CACHE_VERSION);
         assert!(loaded.complete);
         assert_eq!(loaded.repos[0].id, 7);
+
+        // Once saved in the current format, it is not reported again.
+        loaded.save_to(&path).unwrap();
+        assert_eq!(StarCache::load_from(&path).unwrap().upgraded_from, None);
     }
 }

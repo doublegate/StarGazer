@@ -158,6 +158,8 @@ pub enum Readme {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Info,
+    /// Informational but worth reading (e.g. the one-time cache upgrade note).
+    Notice,
     Warn,
     Error,
 }
@@ -173,6 +175,7 @@ impl Status {
     fn ttl(&self) -> Duration {
         match self.level {
             Level::Info => Duration::from_secs(4),
+            Level::Notice => Duration::from_secs(15),
             Level::Warn => Duration::from_secs(8),
             Level::Error => Duration::from_secs(15),
         }
@@ -931,7 +934,11 @@ impl App {
                 self.sync_error = None;
                 let done = self.progress.take();
                 self.ingest(*cache);
-                self.set_status(Level::Info, done.unwrap_or_else(|| "Sync complete".into()));
+                // A routine "up to date" must not bury a notice, warning or
+                // error that is still on screen (e.g. the startup upgrade note).
+                if self.status.as_ref().is_none_or(|s| s.level == Level::Info) {
+                    self.set_status(Level::Info, done.unwrap_or_else(|| "Sync complete".into()));
+                }
             }
             BgMsg::SyncFailed { error, partial } => {
                 self.syncing = false;
@@ -1462,6 +1469,28 @@ mod tests {
                 .iter()
                 .any(|(c, _)| c.ends_with("'s repos"))
         );
+    }
+
+    #[test]
+    fn startup_notice_survives_sync_completion() {
+        let mut a = app();
+        a.set_status(Level::Notice, "Upgraded v0.1 cache");
+        a.progress = Some("Already up to date".into());
+        a.apply(BgMsg::SyncDone(Box::new(StarCache {
+            repos: a.repos.clone(),
+            ..Default::default()
+        })));
+        let s = a.status.as_ref().unwrap();
+        assert_eq!(
+            (s.level, s.text.as_str()),
+            (Level::Notice, "Upgraded v0.1 cache")
+        );
+        // Still visible after an Info message would have expired...
+        a.tick(Instant::now() + Duration::from_secs(5));
+        assert!(a.status.is_some());
+        // ...and gone after its own longer lifetime.
+        a.tick(Instant::now() + Duration::from_secs(16));
+        assert!(a.status.is_none());
     }
 
     #[test]

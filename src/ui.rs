@@ -479,6 +479,7 @@ impl Ui {
         let line = if let Some(s) = &app.status {
             let style = match s.level {
                 Level::Info => t.fg(t.text),
+                Level::Notice => t.fg(t.accent).add_modifier(Modifier::BOLD),
                 Level::Warn => t.fg(t.warning),
                 Level::Error => t.fg(t.error).add_modifier(Modifier::BOLD),
             };

@@ -59,11 +59,14 @@ All notable changes to this project are documented here. The format follows
 - GraphQL sync when a token is available (one request per 100 stars, topics included);
   anonymous REST sync uses conditional requests that do not count against the rate limit.
 - Periodic full resync (default every 7 days, `stale_days`) that drops unstarred repos.
+- Automatic, lossless upgrade of v0.1 caches. The first launch shows a one-time notice with
+  how many repos changed category; the cache is rewritten in the new format immediately so
+  the notice does not repeat. v0.1 can still read the upgraded file.
 - Release binaries for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) and Windows,
   with SHA-256 checksums.
 - CI (fmt, clippy, tests on Linux/macOS/Windows, MSRV, cargo-deny, release-target builds)
   and Dependabot for Cargo and GitHub Actions.
-- Test suite: 108 unit and integration tests (mock GitHub server, render regression tests
+- Test suite: 110 unit and integration tests (mock GitHub server, render regression tests
   for the border bug).
 
 ### Changed
