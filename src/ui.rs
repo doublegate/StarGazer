@@ -134,7 +134,7 @@ impl Ui {
                 t.fg(t.stars).add_modifier(Modifier::BOLD),
             ),
             Span::styled(sep.clone(), t.fg(t.dim)),
-            Span::styled(format!("[{}]", app.sort_label()), t.fg(t.dim)),
+            Span::styled(format!("[{}]", app.title_sort_label()), t.fg(t.dim)),
         ];
         let filters = app.filter_summary();
         if !filters.is_empty() {

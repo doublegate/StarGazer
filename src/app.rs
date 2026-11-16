@@ -634,6 +634,15 @@ impl App {
         }
     }
 
+    /// The title bar's sort label: the sort of the focused pane, since the
+    /// Categories pane and the repo list sort independently.
+    pub fn title_sort_label(&self) -> String {
+        match self.focus {
+            Focus::Categories => format!("Categories: {}", self.cat_sort.label(self.ascii)),
+            Focus::Repos | Focus::Detail => self.sort_label().to_string(),
+        }
+    }
+
     /// Startup: the cached index and the last chosen list (shown from the
     /// cache when fresh, else fetched).
     pub fn set_awesome(&mut self, index: Option<AwesomeIndex>, selection: Option<Selection>) {
@@ -2222,6 +2231,26 @@ mod tests {
             a.handle_key(ch('s'));
         }
         assert_eq!(a.cat_sort, CategorySort::Default);
+    }
+
+    #[test]
+    fn title_sort_label_follows_the_focused_pane() {
+        let mut a = sortable_app();
+        a.set_cat_sort(CategorySort::Name);
+        a.set_sort(SortMode::RecentlyActive);
+        assert_eq!(a.title_sort_label(), "Recently Active", "repo list focused");
+        a.handle_key(key(KeyCode::Left));
+        assert_eq!(a.title_sort_label(), "Categories: Name A→Z");
+        a.handle_key(ch('s')); // cycles the category sort, label follows
+        assert_eq!(a.title_sort_label(), "Categories: Starred ↓");
+        a.handle_key(key(KeyCode::Right));
+        a.handle_key(ch('d'));
+        a.handle_key(key(KeyCode::Tab)); // details focused: the repo sort
+        assert_eq!(a.focus, Focus::Detail);
+        assert_eq!(a.title_sort_label(), "Recently Active");
+        a.ascii = true;
+        a.handle_key(key(KeyCode::Tab)); // Details -> Categories (wraps)
+        assert_eq!(a.title_sort_label(), "Categories: Starred v");
     }
 
     #[test]
