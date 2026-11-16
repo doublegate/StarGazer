@@ -4,7 +4,7 @@ Images used by the project README, the GitHub repository page, and as project ic
 
 | File | What | Origin |
 |------|------|--------|
-| `banner.png` | README header, 1800x600 | Art generated with the Antigravity CLI (`agy`, image-generator subagent, Gemini 4 Carbon); title and tagline overlaid with ImageMagick |
+| `banner.png` | README header, 1800x600 | Art generated with the Antigravity CLI (`agy`, image-generator subagent, Gemini 4 Carbon); title and tagline overlaid with ImageMagick; the bottom-left corner of the first terminal outline, including its glow, is faded to the sky color (RGB 7,16,34) so nothing crowds the title's "r": the left edge is fully sky from the corner up to just above the "r" and eases back in by y 185, the bottom edge is fully sky for 30 px and eases back in by three quarters of its length |
 | `logo.png` | Raster emblem, 1024x1024 | Generated with `agy` (same session) |
 | `logo.svg` | Vector emblem | Hand-drawn redraw of `logo.png`, the master for all icon sizes 64 px and up |
 | `logo-small.svg` | Vector emblem for small sizes | Same design with a heavier frame and no cursor, for 16-48 px |
