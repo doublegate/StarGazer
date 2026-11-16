@@ -604,7 +604,9 @@ impl Ui {
             } if *filtering || !filter.is_empty() => (filter.as_str(), *filtering),
             _ => (app.search.as_str(), app.searching),
         };
-        if typing || !search.is_empty() {
+        // A status message (e.g. from the picker) wins over a shown, not
+        // being typed, search or filter (agy review of PR #8).
+        if typing || (!search.is_empty() && app.status.is_none()) {
             let prefix = " / ";
             let query = sanitize(search);
             let q = truncate_width(&query, max.saturating_sub(width(prefix) + 1), g.ellipsis);

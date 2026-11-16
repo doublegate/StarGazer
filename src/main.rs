@@ -189,6 +189,15 @@ async fn run() -> Result<()> {
                         .join(format!("stargazer-export-{}-{nanos}", std::process::id()));
                     std::fs::create_dir(&dir)
                         .with_context(|| format!("creating {}", dir.display()))?;
+                    // Removed on every exit from this block, including a
+                    // panic unwinding through it (agy review of PR #8).
+                    struct RemoveOnDrop(std::path::PathBuf);
+                    impl Drop for RemoveOnDrop {
+                        fn drop(&mut self) {
+                            let _ = std::fs::remove_dir_all(&self.0);
+                        }
+                    }
+                    let _scratch = RemoveOnDrop(dir.clone());
                     eprintln!("exporting {user}'s stars; your own cache is not changed");
                     let result = sync(
                         &client,
@@ -200,7 +209,6 @@ async fn run() -> Result<()> {
                         &mut progress,
                     )
                     .await;
-                    let _ = std::fs::remove_dir_all(&dir);
                     cache = result.map_err(|f| f.error)?;
                 } else {
                     cache = sync(

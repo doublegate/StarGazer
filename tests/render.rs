@@ -378,8 +378,6 @@ fn awesome_picker_mouse_selects_activates_scrolls_and_closes() {
         Overlay::AwesomePicker { selected, .. } => selected,
         _ => panic!("picker closed"),
     };
-    // set_awesome revealed the chosen list's section (Platforms); collapse
-    // everything for a known start.
     let p = app.regions.popup.unwrap();
 
     // Click a row: selects it. Click it again: toggles it.

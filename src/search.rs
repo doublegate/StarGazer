@@ -59,11 +59,25 @@ const PHRASE_IN_DESC: u32 = 20;
 /// Lowercased words of `s`, split on anything that is not alphanumeric,
 /// except that `+` and `#` stay inside a word so `C++` and `C#` are not
 /// both just `c` (agy review of PR #6); leading ones (`#rust`) are dropped.
+///
+/// A `+` or `#` followed by a letter separates words, so `React+TypeScript`
+/// is two words while `c++17` stays one (agy review of PR #8).
 pub fn words(s: &str) -> Vec<String> {
-    s.split(|c: char| !(c.is_alphanumeric() || c == '+' || c == '#'))
-        .map(|w| w.trim_start_matches(['+', '#']))
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        let joiner = (c == '+' || c == '#') && !chars.get(i + 1).is_some_and(|n| n.is_alphabetic());
+        if c.is_alphanumeric() || joiner {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+    }
+    out.push(cur);
+    out.into_iter()
+        .map(|w| w.trim_start_matches(['+', '#']).to_lowercase())
         .filter(|w| !w.is_empty())
-        .map(|w| w.to_lowercase())
         .collect()
 }
 
@@ -319,6 +333,10 @@ mod tests {
         assert_eq!(rank("c++", &repos), ["o/cpp"]);
         assert_eq!(rank("c#", &repos), ["o/cs"]);
         assert_eq!(words("#rust C++17, x"), ["rust", "c++17", "x"]);
+        assert_eq!(
+            words("React+TypeScript rust+ui F# c++"),
+            ["react", "typescript", "rust", "ui", "f#", "c++"]
+        );
     }
 
     #[test]

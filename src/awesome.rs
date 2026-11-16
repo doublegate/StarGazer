@@ -648,6 +648,9 @@ impl Store {
         fn clean_ref(l: &mut ListRef) {
             l.name = clean(&l.name, MAX_NAME);
             l.desc = l.desc.as_deref().map(|d| clean(d, MAX_DESC));
+            // A tampered entry must not become choosable (agy review).
+            l.url = l.url.as_deref().and_then(clean_url);
+            l.repo = l.repo.take().filter(|r| validate_full_name(r).is_ok());
             l.children.iter_mut().for_each(clean_ref);
         }
         for s in &mut cache.index.sections {
@@ -1202,13 +1205,22 @@ mod tests {
         let hostile = AwesomeIndex {
             sections: vec![Section {
                 name: "Sec\u{202E}tion".into(),
-                items: vec![ListRef {
-                    name: "na\u{200D}\u{1F527}me".into(),
-                    desc: Some("d\tesc".into()),
-                    url: None,
-                    repo: None,
-                    children: Vec::new(),
-                }],
+                items: vec![
+                    ListRef {
+                        name: "na\u{200D}\u{1F527}me".into(),
+                        desc: Some("d\tesc".into()),
+                        url: None,
+                        repo: None,
+                        children: Vec::new(),
+                    },
+                    ListRef {
+                        name: "evil".into(),
+                        desc: None,
+                        url: Some("javascript:alert(1)".into()),
+                        repo: Some("../../etc".into()),
+                        children: Vec::new(),
+                    },
+                ],
             }],
         };
         let write = |version| {
@@ -1227,6 +1239,11 @@ mod tests {
         assert_eq!(s.name, sanitize("Sec\u{202E}tion"));
         assert_eq!(s.items[0].name, sanitize("na\u{200D}\u{1F527}me"));
         assert!(!s.items[0].desc.as_deref().unwrap().contains('\t'));
+        assert_eq!(
+            (s.items[1].repo.as_deref(), s.items[1].url.as_deref()),
+            (None, None),
+            "tampered entry not choosable"
+        );
         write(STORE_VERSION + 1);
         assert!(store.load_index().is_none(), "other version: ignored");
     }

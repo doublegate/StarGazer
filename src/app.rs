@@ -936,6 +936,10 @@ impl App {
             self.choose_awesome(selection, false);
         } else {
             self.set_status(Level::Info, "That list is hosted outside GitHub");
+            // Enter while typing ends typing here too, as on a header.
+            if let Overlay::AwesomePicker { filtering, .. } = &mut self.overlay {
+                *filtering = false;
+            }
         }
     }
 
