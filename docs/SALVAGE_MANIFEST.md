@@ -19,7 +19,7 @@ files came from, where they went, and why.
 | `banner-titlezone.png` | 170,551 | 146,960 | pixel-identical |
 | `logo.png` | 584,555 | 567,971 | pixel-identical |
 | `review.png` | 97,934 | 93,437 | pixel-identical |
-| `agy-output.txt` | 238 | 238 | byte-identical |
+| `agy-output.txt` | 363 | 363 | byte-identical |
 
 PNGs were optimized losslessly with `optipng -o2`; the originals were removed from `/tmp` after
 the check (a move, not a copy).
