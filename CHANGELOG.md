@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- CI: `cargo deny` ignores RUSTSEC-2026-0543 (`chrono` is unmaintained; informational, no
+  vulnerability) until the migration to `jiff`, tracked in
+  [#12](https://github.com/doublegate/StarGazer/issues/12).
+
 ## [0.3.1] - 2026-11-16
 
 ### Changed
