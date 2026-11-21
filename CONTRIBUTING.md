@@ -61,8 +61,8 @@ Breaking the rule brings back the "border gap" bug fixed in 0.2.0.
 `assets/README.md` records how every image was made. When you add or change one, update its
 row there in the same pull request. Edit the banner and logo from the original generations in
 `assets/source/agy/`, never from the already-edited `assets/banner.png` or the quantized
-`assets/logo.png`. Store screenshots losslessly (`optipng`) and artwork palette-quantized
-(`pngquant --quality 85-98`), as described there. Files rescued from a temporary directory are
+`assets/logo.png`. Store screenshots and the originals losslessly (`optipng`) and published
+artwork palette-quantized (`pngquant --quality 85-98`), as described there. Files rescued from a temporary directory are
 recorded in `docs/SALVAGE_MANIFEST.md`.
 
 ## Releases

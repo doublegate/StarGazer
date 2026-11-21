@@ -32,8 +32,6 @@ directory on 2026-11-21 (`docs/SALVAGE_MANIFEST.md`); PNGs were optimized lossle
 | `banner.png` | First composite with the title and tagline, before the corner fade near the "r" |
 | `banner-titlezone.png` | 800x320 crop of the title zone, used to review title placement |
 | `review.png` | Icon-size review sheet: `logo.png` and `logo.svg` renders down to 16 px |
-| `agy-output.txt` | The `agy` run's output (the two files it wrote) |
-
 Palette: navy `#0b1020`, cyan `#22d3ee`, gold `#facc15`. Fonts: Noto Sans Bold (title),
 Noto Sans Mono Bold (tagline).
 
@@ -54,8 +52,10 @@ optipng -quiet -o2 /tmp/ico/*.png
 ./pack_ico.py icons/stargazer.ico /tmp/ico/{16,24,32,48,64,128,256}.png
 ```
 
-Screenshots are stored losslessly (`optipng`) so terminal text stays sharp; the artwork is
-palette-quantized with `pngquant --quality 85-98`.
+Screenshots are stored losslessly (`optipng`) so terminal text stays sharp; the published
+artwork in this directory (banner, logo, social preview) is palette-quantized with
+`pngquant --quality 85-98`. The originals in `source/agy/` are the exception: they are kept
+lossless, so later edits start from full color.
 
 ## Using the social preview
 

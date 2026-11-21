@@ -8,7 +8,12 @@ all-features = true
 # Fail on any RustSec advisory (vulnerability, unmaintained, unsound, yanked).
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # chrono is unmaintained (informational: no vulnerability, no patched
+    # version). Time-boxed: removed by the migration to jiff tracked in
+    # https://github.com/doublegate/StarGazer/issues/12 (planned for v0.3.2).
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; migration to jiff tracked in #12" },
+]
 
 [licenses]
 version = 2
