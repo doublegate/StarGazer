@@ -1,0 +1,4 @@
+warning: --mode auto is not available for this account; continuing in the default mode.
+/tmp/claude-1000/-home-parobek-Code-OSS-Public-Projects-StarGazer/cd3748d3-1f7c-414a-a275-ad92aecbdb76/scratchpad/agy-art/banner-art.png
+/tmp/claude-1000/-home-parobek-Code-OSS-Public-Projects-StarGazer/cd3748d3-1f7c-414a-a275-ad92aecbdb76/scratchpad/agy-art/logo.png
+exit=0
