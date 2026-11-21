@@ -56,6 +56,15 @@ truncated with `text::truncate_width`. New icons must be single emoji-presentati
 points (two columns everywhere) or plain text symbols; `src/theme.rs` tests enforce this.
 Breaking the rule brings back the "border gap" bug fixed in 0.2.0.
 
+## Images and artwork
+
+`assets/README.md` records how every image was made. When you add or change one, update its
+row there in the same pull request. Edit the banner and logo from the original generations in
+`assets/source/agy/`, never from the already-edited `assets/banner.png` or the quantized
+`assets/logo.png`. Store screenshots losslessly (`optipng`) and artwork palette-quantized
+(`pngquant --quality 85-98`), as described there. Files rescued from a temporary directory are
+recorded in `docs/SALVAGE_MANIFEST.md`.
+
 ## Releases
 
 Bump `version` in `Cargo.toml`, move `[Unreleased]` in `CHANGELOG.md` to the new version,
