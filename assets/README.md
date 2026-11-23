@@ -16,7 +16,22 @@ Images used by the project README, the GitHub repository page, and as project ic
 | `social-preview.png` | GitHub social preview, 1280x640, centered layout | The text-free right side of `banner.png` mirrored into a symmetric background; a solid navy center panel (opaque within 300 px of center, fading out by 520 px) keeps the text area free of artwork; `logo.svg` without its background; ImageMagick text |
 | `screenshot-{main,details,help}.png` | TUI screenshots (v0.2.0) | Konsole, captured with Spectacle and cropped with ImageMagick |
 | `screenshot-awesome{,-picker}.png` | Awesome list browser (v0.3.0) and the collapsible picker (v0.3.1) | StarGazer in tmux, Konsole attached to the session so keys can be scripted with `tmux send-keys`; captured with `spectacle -a -b -n` and cropped to the terminal area |
+| `source/agy/` | Source material, not used by the README | The original `agy` generations and work-in-progress from the v0.2.0 README session (see below) |
 
+## Source artwork (`source/agy/`)
+
+The only copies of the original `agy` output, kept so the banner and logo can be re-edited from
+the real originals: generative output cannot be reproduced. Rescued from the session's scratch
+directory on 2026-11-21 (`docs/SALVAGE_MANIFEST.md`); PNGs were optimized losslessly with
+`optipng` (pixel-identical to the originals).
+
+| File | What |
+|------|------|
+| `banner-art.png` | The raw banner art as generated, 1800x600, no text: the base of `../banner.png` and `../social-preview.png` |
+| `logo.png` | The raw emblem as generated, 1024x1024; `../logo.png` is its palette-quantized copy |
+| `banner.png` | First composite with the title and tagline, before the corner fade near the "r" |
+| `banner-titlezone.png` | 800x320 crop of the title zone, used to review title placement |
+| `review.png` | Icon-size review sheet: `logo.png` and `logo.svg` renders down to 16 px |
 Palette: navy `#0b1020`, cyan `#22d3ee`, gold `#facc15`. Fonts: Noto Sans Bold (title),
 Noto Sans Mono Bold (tagline).
 
@@ -37,8 +52,10 @@ optipng -quiet -o2 /tmp/ico/*.png
 ./pack_ico.py icons/stargazer.ico /tmp/ico/{16,24,32,48,64,128,256}.png
 ```
 
-Screenshots are stored losslessly (`optipng`) so terminal text stays sharp; the artwork is
-palette-quantized with `pngquant --quality 85-98`.
+Screenshots are stored losslessly (`optipng`) so terminal text stays sharp; the published
+artwork in this directory (banner, logo, social preview) is palette-quantized with
+`pngquant --quality 85-98`. The originals in `source/agy/` are the exception: they are kept
+lossless, so later edits start from full color.
 
 ## Using the social preview
 

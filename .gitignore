@@ -31,6 +31,10 @@ lcov.info
 # Local release packaging (CI builds the real archives)
 /dist/
 
+# Default landing place of the /tmp salvage tool: files rescued there are reviewed
+# first, then moved to their real home and recorded in docs/SALVAGE_MANIFEST.md
+/salvaged/
+
 # Local agent instruction files (Master-Claude managed; import ~/.claude paths)
 /AGENTS.md
 /CLAUDE.md

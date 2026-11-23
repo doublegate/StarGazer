@@ -357,6 +357,10 @@ or `GH_TOKEN` environment variables.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
+The banner and logo were generated with the Antigravity CLI and then edited; how every image
+was made, and the original generations kept for re-editing (`assets/source/agy/`), are
+documented in [assets/README.md](assets/README.md).
+
 ## License
 
 MIT, see [LICENSE](LICENSE)

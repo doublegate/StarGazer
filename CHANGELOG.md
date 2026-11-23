@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Source artwork** (`assets/source/agy/`): the original Antigravity generations behind the
+  README banner and the logo (raw banner art, raw emblem, the first titled composite, review
+  images), kept so they can be re-edited from the originals; described in `assets/README.md`.
+- **Salvage manifest** (`docs/SALVAGE_MANIFEST.md`): a record of files rescued from temporary
+  directories into the repository.
+- **CONTRIBUTING: images and artwork:** how to add or change images.
+
 ### Changed
 
 - CI: `cargo deny` ignores RUSTSEC-2026-0543 (`chrono` is unmaintained; informational, no
